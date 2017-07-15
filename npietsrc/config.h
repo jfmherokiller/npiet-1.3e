@@ -11,7 +11,7 @@
 #define CONFIG_H_HOOK
 
 /* Define if you have the <gd.h> header file.  */
-#undef HAVE_GD_H
+#define HAVE_GD_H
 
 /* Define if you have the <png.h> header file.  */
 #define HAVE_PNG_H

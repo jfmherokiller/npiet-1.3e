@@ -1,0 +1,8 @@
+set(ZLIB_LIBRARY C://Users//peter//.emscripten_cache//zlib.bc)
+set(ZLIB_INCLUDE_DIR C:\\Users\\peter\\.emscripten_cache\\ports-builds\\zlib)
+SET(BUILD_SHARED_LIBS OFF CACHE BOOL "Build libfoo shared library")
+SET(BUILD_STATIC_LIBS ON CACHE BOOL "Build libfoo static library")
+SET(ENABLE_PNG 1)
+set(PNG_LIBRARY C://Users//peter//.emscripten_cache//libpng.bc)
+set(PNG_PNG_INCLUDE_DIR C:\\Users\\peter\\.emscripten_cache\\ports-builds\\libpng)
+add_subdirectory(libgd)

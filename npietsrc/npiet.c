@@ -2712,7 +2712,8 @@ do_signal() {
 
 /*
  * main entry:
- *//*
+ */
+
 int
 main(int argc, char *argv[]) {
     int rc;
@@ -2745,8 +2746,8 @@ main(int argc, char *argv[]) {
     if (do_gdtrace) {
         gd_init ();
 
-        *//* save a pic on ctrl-c: *//*
-        signal(SIGINT, do_signal);
+        /* save a pic on ctrl-c: */
+        signal(SIGINT, (void (*)(int)) do_signal);
     }
 
     rc = piet_run();
@@ -2756,7 +2757,7 @@ main(int argc, char *argv[]) {
     }
 
     return rc;
-}*/
+}
 
 int EMSCRIPTEN_KEEPALIVE mymainpng(char *urlToPass) {
     char *myfile = "tempfile.png";
