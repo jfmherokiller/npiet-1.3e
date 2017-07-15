@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.4.3)
-SET(CMAKE_MODULE_PATH "${GD_SOURCE_DIR}/cmake/modules")
+SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/dist)
 #include cmake module bits
 include(CheckIncludeFiles)
 include(CheckIncludeFile)

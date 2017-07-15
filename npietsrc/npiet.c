@@ -56,16 +56,33 @@
 
 char *version = "v1.3e";
 
-#include <errno.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include "npiet.h"
 
-#include "config.h"
 
-void usage(int return_code);
+
+
+
+
+
+/*
+ * picture storage:
+ */
+static int *cells = 0;
+static int width = 0;
+static int height = 0;
+
+/*
+ * color and hue values:
+ *
+ * we order the colors linear:
+ *
+ *   idx 0:   light red
+ *   [...]
+ *   idx 15:  dark margenta
+ *   idx 16:  white
+ *   idx 17:  black
+
+ */
 
 /* be somewhat verbose: */
 int verbose = 0;
@@ -115,52 +132,8 @@ char *do_n_str = 0;
  */
 int version_11 = 0;
 
-/* helper: */
-#define dprintf                                                                \
-  if (debug)                                                                   \
-  printf
-#define tprintf                                                                \
-  if (trace && exec_step >= gd_trace_start && exec_step <= gd_trace_end)       \
-  printf
-#define t2printf                                                               \
-  if (trace > 1)                                                               \
-  printf
-#define vprintf                                                                \
-  if (verbose)                                                                 \
-  printf
 
-int parse_args(int argc, char **argv);
 
-extern void alloc_cells(int n_width, int n_height);
-
-/*
- * picture storage:
- */
-static int *cells = 0;
-static int width = 0;
-static int height = 0;
-
-/*
- * color and hue values:
- *
- * we order the colors linear:
- *
- *   idx 0:   light red
- *   [...]
- *   idx 15:  dark margenta
- *   idx 16:  white
- *   idx 17:  black
-
- */
-#define n_hue 6   /* 4 colors */
-#define n_light 3 /* 4 shades */
-#define c_white (n_hue * n_light)
-#define c_black (c_white + 1)
-#define n_colors (c_black + 1)
-/* internal used index for filling areas: */
-#define c_mark_index 9999
-
-int adv_col(int c, int h, int l);
 
 static struct c_color {
     int col;      /* rgb color */
@@ -284,6 +257,8 @@ int get_light(int val) {
     exit(-99);
 }
 
+
+
 int get_color_idx(int col) {
     int i;
 
@@ -342,6 +317,8 @@ int get_cell(int x, int y) {
     }
     return cells[c_idx];
 }
+
+
 
 void set_cell(int x, int y, int val) {
     int c_idx;
@@ -511,6 +488,37 @@ int adv_col(int c, int h, int l) {
     return (((((c) % 6) + (h)) % 6) + (6 * ((((c) / 6) + (l)) % 3)));
 }
 
+int piet_run() {
+    if (width <= 0 || height <= 0) {
+        fprintf(stderr, "nothing to execute...\n");
+        return -1;
+    }
+
+    piet_init();
+
+    while (1) {
+
+        t2printf("trace:  pos=%d,%d dp=%c cc=%c\n", p_xpos, p_ypos, p_dir_pointer,
+                 p_codel_chooser);
+
+        if (piet_step() < 0) {
+            vprintf("\ninfo: program end\n");
+            break;
+        }
+
+        if (do_gdtrace && trace) {
+            /*
+             * in case of additional tracing, make sure we always have
+             * an up-to-date picture; it's way expensive, so it may be
+             * get an extra option...
+             */
+            gd_save();
+        }
+    }
+
+    return 0;
+}
+
 void dump_cells() {
     int i, j;
     for (j = 0; j < height; j++) {
@@ -528,23 +536,7 @@ void dump_cells() {
  * this is extra fun, but requires libgd and libpng.
  */
 
-#ifndef HAVE_GD_H
-
-/*
- * without support, make dummy substitutions avail:
- */
-#define gd_init()
-#define gd_save()
-#define gd_trace()
-#define gd_try_init()
-#define gd_try_step(a1, a2, a3, a4, a5, a6)
-#define gd_action(a1, a2, a3, a4, a5, a6, a7)
-
-#else
-
-#include <gd.h>
-#include <gdfonts.h>
-#include <gdfontt.h>
+#ifdef HAVE_GD_H
 
 #define i_sign(x) ((x) < 0 ? -1 : ((x) > 0 ? 1 : 0))
 #define i_abs(x) ((x) < 0 ? -(x) : (x))
@@ -1079,94 +1071,9 @@ void gd_action(int p_x, int p_y, int n_x, int n_y, int a_x, int a_y,
 
 #else
 
-#include <emscripten/emscripten.h>
-#include <math.h>
-#include <png.h>
 
-png_byte bit_depth;
 
-png_structp png_ptr;
-png_infop info_ptr;
-int number_of_passes;
-png_bytep *row_pointers;
 
-int read_png(char *fname) {
-    char header[8];
-    FILE *in;
-    int i, j, ncol, rc;
-
-    if (!strcmp(fname, "-")) {
-        /* read from stdin: */
-        vprintf("info: not trying to read png from stdin\n");
-        return -1;
-    }
-
-    if (!(in = fopen(fname, "rb"))) {
-        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname, strerror(errno));
-        return -1;
-    }
-
-    if (!in || (rc = fread(header, 1, 8, in)) != 8 ||
-        png_sig_cmp((unsigned char *) header, 0, 8) != 0) {
-        return -1;
-    }
-
-    if (!(png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0)) ||
-        !(info_ptr = png_create_info_struct(png_ptr))) {
-        return -1;
-    }
-
-    png_init_io(png_ptr, in);
-    png_set_sig_bytes(png_ptr, 8);
-
-    png_read_png(png_ptr, info_ptr,
-                 PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_STRIP_ALPHA |
-                 PNG_TRANSFORM_EXPAND,
-                 NULL);
-    /**		| PNG_TRANSFORM_PACKING | PNG_TRANSFORM_SHIFT **/
-
-    row_pointers = png_get_rows(png_ptr, info_ptr);
-
-    width = png_get_image_width(png_ptr, info_ptr);
-    height = png_get_image_height(png_ptr, info_ptr);
-    ncol = 2 << (png_get_bit_depth(png_ptr, info_ptr) - 1);
-
-    vprintf("info: got %d x %d pixel with %d cols\n", width, height, ncol);
-
-    alloc_cells(width, height);
-
-    for (j = 0; j < height; j++) {
-        png_byte *row = row_pointers[j];
-        for (i = 0; i < width; i++) {
-
-            png_byte *ptr = &row[i * 3];
-
-            /* ncol always 256 ? */
-            int r = (ptr[0] * 256) / ncol;
-            int g = (ptr[1] * 256) / ncol;
-            int b = (ptr[2] * 256) / ncol;
-
-            int col = ((r * 256 + g) * 256) + b;
-            int col_idx = get_color_idx(col);
-
-            if (col_idx < 0) {
-                if (unknown_color == -1) {
-                    fprintf(stderr,
-                            "cannot read from `%s'; reason: invalid color found\n",
-                            fname);
-                    return -1;
-                } else {
-                    /* set to black or white: */
-                    col_idx = (unknown_color == 0 ? c_black : c_white);
-                }
-            }
-
-            set_cell(i, j, col_idx);
-        }
-    }
-
-    return 0;
-}
 
 #endif /* PNG */
 
@@ -1320,108 +1227,7 @@ int read_gif(char *fname) {
 
 #endif /* gif */
 
-int read_ppm(char *fname) {
-    FILE *in;
-    char line[1024];
-    int ppm_type = 0;
-    int i, j, width, height, ncol;
 
-    if (!strcmp(fname, "-")) {
-        /* read from stdin: */
-        in = stdin;
-        fname = "<stdin>";
-    } else {
-        in = fopen(fname, "rb");
-    }
-    if (!in) {
-        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname, strerror(errno));
-        return -1;
-    }
-
-    if (!fgets(line, sizeof(line), in)) {
-        fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
-                feof(in) ? "EOF" : strerror(errno));
-        return -1;
-    }
-
-    if (!strncmp(line, "P6", 2)) {
-        /* ppm file with binary data: */
-        ppm_type = 6;
-    } else if (!strncmp(line, "P3", 2)) {
-        /* ppm with ascii data: */
-        ppm_type = 3;
-    } else {
-        fprintf(stderr, "cannot read from `%s'; reason: unknown PPM format\n",
-                fname);
-        return -1;
-    }
-
-    while (fgets(line, sizeof(line), in) && line[0] == '#') {
-        continue;
-    }
-
-    if (feof(in) || 2 != sscanf(line, "%d %d\n", &width, &height)) {
-        fprintf(stderr, "cannot read from `%s'; reason: unknown width height\n",
-                fname);
-        return -1;
-    }
-
-    if (1 != fscanf(in, "%d\n", &ncol)) {
-        fprintf(stderr, "cannot read from `%s'; reason: unknown number of colors\n",
-                fname);
-        return -1;
-    }
-
-    if (ncol != 255) {
-        fprintf(stderr, "warning: found number of colors %d, but 255 expected\n",
-                ncol);
-    }
-
-    vprintf("info: got ppm image with %d x %d pixel and %d cols\n", width, height,
-            ncol);
-
-    alloc_cells(width, height);
-
-    for (j = 0; j < height; j++) {
-        for (i = 0; i < width; i++) {
-
-            int r, g, b, col, col_idx;
-
-            if (ppm_type == 6) {
-                if ((r = fgetc(in)) < 0 || (g = fgetc(in)) < 0 || (b = fgetc(in)) < 0) {
-                    fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
-                            strerror(errno));
-                    return -1;
-                }
-            } else if (ppm_type == 3) {
-                if (3 != fscanf(in, "%d %d %d", &r, &g, &b)) {
-                    fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
-                            strerror(errno));
-                    return -1;
-                }
-            }
-
-            col = ((r * (ncol + 1) + g) * (ncol + 1)) + b;
-            col_idx = get_color_idx(col);
-            if (col_idx < 0) {
-                vprintf("info: unknown color 0x%06x at %d,%d\n", col, i, j);
-                if (unknown_color == -1) {
-                    fprintf(stderr,
-                            "cannot read from `%s'; reason: invalid color found\n",
-                            fname);
-                    return -1;
-                } else {
-                    /* set to black or white: */
-                    col_idx = (unknown_color == 0 ? c_black : c_white);
-                }
-            }
-
-            set_cell(i, j, col_idx);
-        }
-    }
-
-    return 0;
-}
 
 /*
  * helper to guess codel size:
@@ -2440,36 +2246,7 @@ int piet_step() {
     return -1;
 }
 
-int piet_run() {
-    if (width <= 0 || height <= 0) {
-        fprintf(stderr, "nothing to execute...\n");
-        return -1;
-    }
 
-    piet_init();
-
-    while (1) {
-
-        t2printf("trace:  pos=%d,%d dp=%c cc=%c\n", p_xpos, p_ypos, p_dir_pointer,
-                 p_codel_chooser);
-
-        if (piet_step() < 0) {
-            vprintf("\ninfo: program end\n");
-            break;
-        }
-
-        if (do_gdtrace && trace) {
-            /*
-             * in case of additional tracing, make sure we always have
-             * an up-to-date picture; it's way expensive, so it may be
-             * get an extra option...
-             */
-            gd_save();
-        }
-    }
-
-    return 0;
-}
 
 /*
  * some experimental fun:
@@ -2710,24 +2487,6 @@ int main(int argc, char *argv[]) {
     if (do_gdtrace) {
         gd_save();
     }
-
-    return rc;
-}
-
-int EMSCRIPTEN_KEEPALIVE mymainpng(char *urlToPass) {
-    char *myfile = "tempfile.png";
-    emscripten_wget(urlToPass, myfile);
-    int rc;
-    read_png(myfile);
-    rc = piet_run();
-    return rc;
-}
-
-int EMSCRIPTEN_KEEPALIVE mymainppm(char *urlToPass) {
-    char *myfile = "tempfile.ppm";
-    emscripten_wget(urlToPass, myfile);
-    int rc;
-    read_ppm(myfile);
-    rc = piet_run();
+    emscripten_force_exit(rc);
     return rc;
 }
