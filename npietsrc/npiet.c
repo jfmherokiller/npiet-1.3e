@@ -3,7 +3,7 @@
  * (schoenfr@web.de)					Aug 2016
  *
  * npiet is an interperter for the piet programming language.
- * 
+ *
  *
  * about the piet programming language see:
  *
@@ -24,7 +24,7 @@
  * created - great fun ;-)
  *
  *	  cc -DHAVE_GD_H -o npiet npiet.c -lgd
- *	  ./npiet -tpic hi.ppm 
+ *	  ./npiet -tpic hi.ppm
  *
  * reading png is supported if -DHAVE_PNP_H is set
  * and reading gif is supported if -DHAVE_GIF_LIB_H is set.
@@ -33,12 +33,12 @@
  * but all this is automagically handled by running
  *
  *	  ./configure
- * 
+ *
  *
  * Copyright (C) 2004 Erik Schoenfelder (schoenfr@web.de)
  *
  * This file is part of npiet.
- * 
+ *
  * npiet is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
  * the Free Software Foundation version 2.
@@ -47,7 +47,7 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with npiet; see the file COPYING.  If not, write to the Free
  * Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -56,67 +56,16 @@
 
 char *version = "v1.3e";
 
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
-#include <errno.h>
+#include <unistd.h>
 
+#include "config.h"
 
-# include "config.h"
-
-
-void
-usage(int rc) {
-    fprintf(stderr, "npiet %s  (with", version);
-#ifdef HAVE_GD_H
-    fprintf (stderr, " ");
-#else
-    fprintf(stderr, "out ");
-#endif
-    fprintf(stderr, "GD support, with");
-#ifdef HAVE_GIF_LIB_H
-    fprintf (stderr, " ");
-#else
-    fprintf(stderr, "out ");
-#endif
-    fprintf(stderr, "GIF support, with");
-#ifdef HAVE_PNG_H
-    fprintf(stderr, " ");
-#else
-    fprintf (stderr, "out ");
-#endif
-    fprintf(stderr, "PNG support)\n\n");
-
-    fprintf(stderr, "use: npiet [<options>] <filename>\n");
-    fprintf(stderr, "options:\n");
-    fprintf(stderr, "\t-v         - be verbose (default: off)\n");
-    fprintf(stderr, "\t-q         - be quiet (default: off)\n");
-    fprintf(stderr, "\t-e <n>     - execution steps (default: unlimited)\n");
-    fprintf(stderr, "\t-t         - trace (default: off)\n");
-    fprintf(stderr, "\t-ub        - unknown colors are black "
-            "(default: white)\n");
-    fprintf(stderr, "\t-uu        - unknown colors give error "
-            "(default: white)\n");
-    fprintf(stderr, "\t-cs <n>    - codelsize of the input (default: guess)\n");
-#ifndef HAVE_GD_H
-    fprintf(stderr, "\t-tpic      - create trace picture (not compiled in)\n");
-    fprintf(stderr, "\t-tpf <n>   - trace pixelzoom  (not compiled in)\n");
-    fprintf(stderr, "\t-tps       - simple trace pic w/o dp/cc info  (not compiled in)\n");
-#else
-    fprintf (stderr, "\t-tpic      - create trace picture  (default: do not)\n");
-    fprintf (stderr, "\t-tpf <n>   - trace pixelzoom  (default: 48 or so)\n");
-    fprintf (stderr, "\t-tps       - simple trace pic w/o dp/cc info  (default: sho dp/cc info)\n");
-#endif
-    fprintf(stderr, "\t-ts <n>    - graphic trace start (default: 0)\n");
-    fprintf(stderr, "\t-te <n>    - graphic trace end (default: unlimited)\n");
-    fprintf(stderr, "\t-n-str <s> - nase stuff: string-to-command\n");
-    fprintf(stderr, "\t-d         - debug (default: off)\n");
-    fprintf(stderr, "\t-dpbug     - model the perl piet interpreter (default: off)\n");
-    fprintf(stderr, "\t-v11       - model the npiet v1.1 interpreter (default: off)\n");
-
-    exit(rc);
-}
+void usage(int return_code);
 
 /* be somewhat verbose: */
 int verbose = 0;
@@ -144,7 +93,7 @@ int do_gdtrace = 0;
 char *gd_trace_filename = "npiet-trace.png";
 int gd_trace_simple = 0;
 unsigned gd_trace_start = 0;
-unsigned gd_trace_end = 1 << 31;        /* lot's to print */
+unsigned gd_trace_end = (unsigned int) (1 << 31); /* lot's to print */
 
 /* pixelsize when painting graphical trace output: */
 int c_xy = 32;
@@ -162,21 +111,323 @@ int toggle_bug = 0;
 char *do_n_str = 0;
 
 /* fall back to npiet v1.1 behavior (fixed white codel crossing but
- * without trace info: 
+ * without trace info:
  */
 int version_11 = 0;
 
 /* helper: */
-#define dprintf        if (debug) printf
-#define d2printf    if (debug > 1) printf
-#define tprintf        if (trace \
-                && exec_step >= gd_trace_start \
-                            && exec_step <= gd_trace_end) printf
-#define t2printf    if (trace > 1) printf
-#define vprintf        if (verbose) printf
+#define dprintf                                                                \
+  if (debug)                                                                   \
+  printf
+#define tprintf                                                                \
+  if (trace && exec_step >= gd_trace_start && exec_step <= gd_trace_end)       \
+  printf
+#define t2printf                                                               \
+  if (trace > 1)                                                               \
+  printf
+#define vprintf                                                                \
+  if (verbose)                                                                 \
+  printf
 
-int
-parse_args(int argc, char **argv) {
+int parse_args(int argc, char **argv);
+
+extern void alloc_cells(int n_width, int n_height);
+
+/*
+ * picture storage:
+ */
+static int *cells = 0;
+static int width = 0;
+static int height = 0;
+
+/*
+ * color and hue values:
+ *
+ * we order the colors linear:
+ *
+ *   idx 0:   light red
+ *   [...]
+ *   idx 15:  dark margenta
+ *   idx 16:  white
+ *   idx 17:  black
+
+ */
+#define n_hue 6   /* 4 colors */
+#define n_light 3 /* 4 shades */
+#define c_white (n_hue * n_light)
+#define c_black (c_white + 1)
+#define n_colors (c_black + 1)
+/* internal used index for filling areas: */
+#define c_mark_index 9999
+
+int adv_col(int c, int h, int l);
+
+static struct c_color {
+    int col;      /* rgb color */
+    char *l_name; /* long color name */
+    char *s_name; /* short color name */
+    int c_idx;    /* our internal color index */
+} c_colors[] = {
+
+        {0xFFC0C0, "light red",     "lR", 0},
+        {0xFFFFC0, "light yellow",  "lY", 1},
+        {0xC0FFC0, "light green",   "lG", 2},
+        {0xC0FFFF, "light cyan",    "lC", 3},
+        {0xC0C0FF, "light blue",    "lB", 4},
+        {0xFFC0FF, "light magenta", "lM", 5},
+
+        {0xFF0000, "red",           "nR", 6},
+        {0xFFFF00, "yellow",        "nY", 7},
+        {0x00FF00, "green",         "nG", 8},
+        {0x00FFFF, "cyan",          "nC", 9},
+        {0x0000FF, "blue",          "nB", 10},
+        {0xFF00FF, "magenta",       "nM", 11},
+
+        {0xC00000, "dark red",      "dR", 12},
+        {0xC0C000, "dark yellow",   "dY", 13},
+        {0x00C000, "dark green",    "dG", 14},
+        {0x00C0C0, "dark cyan",     "dC", 15},
+        {0x0000C0, "dark blue",     "dB", 16},
+        {0xC000C0, "dark magenta",  "dM", 17},
+
+        {0xFFFFFF, "white",         "WW", c_white},
+        {0x000000, "black",         "BB", c_black}};
+
+/*
+ * execution states:
+ */
+int p_dir_pointer;   /* DP: p_{left, right, up, down} */
+int p_codel_chooser; /* CC: p_left or p_right */
+int p_ypos;          /* execution position */
+int p_xpos;          /* execution position */
+
+#define p_left 'l'
+#define p_right 'r'
+#define p_up 'u'
+#define p_down 'd'
+
+#define toggle_cc(cc) ((cc) == 'r' ? 'l' : 'r')
+
+#define turn_dp(dp)                                                            \
+  ((dp) == 'r' ? 'd' : ((dp) == 'd' ? 'l' : ((dp) == 'l' ? 'u' : 'r')))
+#define turn_dp_inv(dp)                                                        \
+  ((dp) == 'r' ? 'u' : ((dp) == 'u' ? 'l' : ((dp) == 'l' ? 'd' : 'r')))
+#define dp_dx(dp) ((dp) == 'l' ? -1 : ((dp) == 'r' ? 1 : 0))
+#define dp_dy(dp) ((dp) == 'u' ? -1 : ((dp) == 'd' ? 1 : 0))
+
+/* informal step counter: */
+unsigned exec_step = 0;
+
+/*
+ * stack space for runtime action:
+ */
+long *stack = 0;   /* stack space */
+int num_stack = 0; /* current number of values on stack */
+int max_stack = 0; /* max size of stack allocated */
+
+void alloc_stack_space(size_t val) {
+    if (val <= max_stack) {
+        return;
+    } else if (!stack) {
+        max_stack = val;
+        stack = (long *) calloc(val, sizeof(long));
+    } else {
+        long *new_stack = (long *) calloc(val, sizeof(long));
+        memcpy(new_stack, stack, num_stack * sizeof(long));
+        free(stack);
+        max_stack = val;
+        stack = new_stack;
+    }
+    dprintf("deb: stack extended to %d entries (num_stack is %d)\n", max_stack,
+            num_stack);
+}
+
+void tdump_stack() {
+    int i;
+
+    if (num_stack == 0) {
+        tprintf("trace: stack is empty");
+    } else {
+        tprintf("trace: stack (%d values):", num_stack);
+    }
+    for (i = 0; i < num_stack; i++) {
+        tprintf(" %ld", stack[num_stack - i - 1]);
+    }
+    tprintf("\n");
+}
+
+/*
+ * extract color component:
+ */
+int get_hue(int val) {
+    if (val < (n_hue * n_light)) {
+        return val % n_hue;
+    }
+    if (val == c_black || val == c_white) {
+        return val;
+    }
+
+    fprintf(stderr, "no such color: col %d\n", val);
+    exit(-99);
+    return 0;
+}
+
+/*
+ * extract lightness component:
+ */
+int get_light(int val) {
+    if (val < c_black) {
+        return val / n_hue;
+    }
+
+    fprintf(stderr, "no such color: col %d\n", val);
+    exit(-99);
+}
+
+int get_color_idx(int col) {
+    int i;
+
+    for (i = 0; i < n_colors; i++) {
+        if (col == c_colors[i].col) {
+            return c_colors[i].c_idx;
+        }
+    }
+    return -1;
+}
+
+/*
+ *
+ *
+ */
+char *cell2str(int idx) {
+    int i;
+
+    /* internal special index w/o real color: */
+    if (idx == c_mark_index) {
+        return "II";
+    }
+
+    for (i = 0; i < n_colors; i++) {
+        if (idx == c_colors[i].c_idx) {
+            return c_colors[i].s_name;
+        }
+    }
+
+    fprintf(stderr, "unknown color index %d\n", idx);
+    return "??";
+}
+
+#ifdef DEBUG
+/*
+ * slower call for nicer debugging:
+ */
+int cell_idx(int x, int y) {
+  if (x < 0 || x >= width || y < 0 || y >= height) {
+    return -1;
+  }
+
+  return y * width + x;
+}
+#else
+#define cell_idx(x, y)                                                         \
+  (((x) < 0 || (x) >= width || (y) < 0 || (y) >= height) ? -1 : (y)*width + (x))
+#endif
+
+int get_cell(int x, int y) {
+    int c_idx = cell_idx(x, y);
+    if (c_idx < 0) {
+        if (debug > 1)
+            printf("deb: bad index for x=%d, y=%d\n", x, y);
+        return -1;
+    }
+    return cells[c_idx];
+}
+
+void set_cell(int x, int y, int val) {
+    int c_idx;
+
+    c_idx = cell_idx(x, y);
+    if (c_idx < 0) {
+        alloc_cells(x >= width ? x + 1 : width, y >= height ? y + 1 : height);
+    }
+
+    if ((c_idx = cell_idx(x, y)) < 0) {
+        exit(-99); /* internal error */
+    }
+    cells[c_idx] = val;
+}
+
+void alloc_cells(int n_width, int n_height) {
+    int i, j;
+    int *n_cells = (int *) malloc(n_width * n_height * sizeof(int));
+
+    for (j = 0; j < n_height; j++) {
+        for (i = 0; i < n_width; i++) {
+            n_cells[j * n_width + i] = c_black;
+        }
+    }
+
+    if (!n_cells) {
+        fprintf(stderr, "out of memory: cannot allocate %d * %d cells\n", n_height,
+                n_width);
+        exit(-99);
+    }
+
+    if (cells) {
+        for (j = 0; j < height; j++) {
+            for (i = 0; i < width; i++) {
+                n_cells[j * n_width + i] = cells[j * width + i];
+            }
+        }
+        free(cells);
+    }
+
+    cells = n_cells;
+    width = n_width;
+    height = n_height;
+}
+
+void usage(int return_code) {
+    fprintf(stderr, "npiet %s  (with", version);
+    fprintf(stderr, " ");
+    fprintf(stderr, "GD support, with");
+#ifdef HAVE_GIF_LIB_H
+    fprintf(stderr, " ");
+#else
+    fprintf(stderr, "out ");
+#endif
+    fprintf(stderr, "GIF support, with");
+    fprintf(stderr, " ");
+    fprintf(stderr, "PNG support)\n\n");
+
+    fprintf(stderr, "use: npiet [<options>] <filename>\n");
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "\t-v         - be verbose (default: off)\n");
+    fprintf(stderr, "\t-q         - be quiet (default: off)\n");
+    fprintf(stderr, "\t-e <n>     - execution steps (default: unlimited)\n");
+    fprintf(stderr, "\t-t         - trace (default: off)\n");
+    fprintf(stderr, "\t-ub        - unknown colors are black "
+            "(default: white)\n");
+    fprintf(stderr, "\t-uu        - unknown colors give error "
+            "(default: white)\n");
+    fprintf(stderr, "\t-cs <n>    - codelsize of the input (default: guess)\n");
+    fprintf(stderr, "\t-tpic      - create trace picture  (default: do not)\n");
+    fprintf(stderr, "\t-tpf <n>   - trace pixelzoom  (default: 48 or so)\n");
+    fprintf(stderr, "\t-tps       - simple trace pic w/o dp/cc info  (default: "
+            "sho dp/cc info)\n");
+    fprintf(stderr, "\t-ts <n>    - graphic trace start (default: 0)\n");
+    fprintf(stderr, "\t-te <n>    - graphic trace end (default: unlimited)\n");
+    fprintf(stderr, "\t-n-str <s> - nase stuff: string-to-command\n");
+    fprintf(stderr, "\t-d         - debug (default: off)\n");
+    fprintf(stderr,
+            "\t-dpbug     - model the perl piet interpreter (default: off)\n");
+    fprintf(stderr,
+            "\t-v11       - model the npiet v1.1 interpreter (default: off)\n");
+
+    exit(return_code);
+}
+
+int parse_args(int argc, char **argv) {
     while (--argc > 0) {
         argv++;
         if (!strcmp(argv[0], "-v")) {
@@ -204,69 +455,42 @@ parse_args(int argc, char **argv) {
             version_11 = 1;
             vprintf("info: setting npiet version 1.1 behavior\n");
         } else if (!strcmp(argv[0], "-tpic")) {
-#ifndef HAVE_GD_H
-            printf("note: no GD support compiled in. the graphical trace "
-                           "feature is not avail\n");
-#else
             do_gdtrace = 1;
-            vprintf ("info: save trace output to %s\n", gd_trace_filename);
-#endif
+            vprintf("info: save trace output to %s\n", gd_trace_filename);
         } else if (argc > 0 && !strcmp(argv[0], "-tpf")) {
-            argc--, argv++;        /* shift */
-#ifndef HAVE_GD_H
-            printf("note: no GD support compiled in. the graphical trace "
-                           "feature is not avail\n");
-#else
-            if ((c_xy = atoi (argv [0])) < 1) {
-          fprintf (stderr, "warning: trace pixelzoom %d is invalid\n",
-               c_xy);
-          c_xy = 32;
+            argc--, argv++; /* shift */
+            if ((c_xy = atoi(argv[0])) < 1) {
+                fprintf(stderr, "warning: trace pixelzoom %d is invalid\n", c_xy);
+                c_xy = 32;
             }
-            vprintf ("info: trace pixelzoom set to %d\n", c_xy);
+            vprintf("info: trace pixelzoom set to %d\n", c_xy);
             do_gdtrace = 1;
-#endif
         } else if (!strcmp(argv[0], "-tps")) {
-#ifndef HAVE_GD_H
-            printf("note: no GD support compiled in. the graphical trace "
-                           "feature is not avail\n");
-#else
             do_gdtrace = 1;
             gd_trace_simple++;
-#endif
         } else if (argc > 0 && !strcmp(argv[0], "-e")) {
-            argc--, argv++;        /* shift */
+            argc--, argv++; /* shift */
             max_exec_step = atoi(argv[0]);
             vprintf("info: number of execution steps set to %u\n", max_exec_step);
         } else if (argc > 0 && !strcmp(argv[0], "-ts")) {
-            argc--, argv++;        /* shift */
-#ifndef HAVE_GD_H
-            printf("note: no GD support compiled in. the graphical trace "
-                           "feature is not avail\n");
-#else
-            gd_trace_start = atoi (argv [0]);
-            vprintf ("info: graphical trace start set to %d\n", gd_trace_start);
+            argc--, argv++; /* shift */
+            gd_trace_start = atoi(argv[0]);
+            vprintf("info: graphical trace start set to %d\n", gd_trace_start);
             /* enable graphical tracing anyway: */
             do_gdtrace = 1;
-#endif
         } else if (argc > 0 && !strcmp(argv[0], "-te")) {
-            argc--, argv++;        /* shift */
-#ifndef HAVE_GD_H
-            printf("note: no GD support compiled in. the graphical trace "
-                           "feature is not avail\n");
-#else
-            gd_trace_end = atoi (argv [0]);
-            vprintf ("info: graphical trace end set to %d\n", gd_trace_end);
+            argc--, argv++; /* shift */
+            gd_trace_end = atoi(argv[0]);
+            vprintf("info: graphical trace end set to %d\n", gd_trace_end);
             /* enable graphical tracing anyway: */
             do_gdtrace = 1;
-#endif
         } else if (argc > 0 && !strcmp(argv[0], "-n-str")) {
-            argc--, argv++;        /* shift */
+            argc--, argv++; /* shift */
             do_n_str = argv[0];
         } else if (argc > 0 && !strcmp(argv[0], "-cs")) {
-            argc--, argv++;        /* shift */
+            argc--, argv++; /* shift */
             if ((codel_size = atoi(argv[0])) < 1) {
-                fprintf(stderr, "warning: codelsize %d is invalid\n",
-                        codel_size);
+                fprintf(stderr, "warning: codelsize %d is invalid\n", codel_size);
                 codel_size = 1;
             }
             vprintf("info: codelsize set to %d\n", codel_size);
@@ -283,286 +507,11 @@ parse_args(int argc, char **argv) {
     return 0;
 }
 
-
-extern void alloc_cells(int n_width, int n_height);
-
-
-/*
- * picture storage:
- */
-static int *cells = 0;
-static int width = 0, height = 0;
-
-/*
- * color and hue values:
- * 
- * we order the colors linear:
- *
- *   idx 0:   light red
- *   [...]
- *   idx 15:  dark margenta
- *   idx 16:  white
- *   idx 17:  black
-
- */
-#define n_hue        6        /* 4 colors */
-#define n_light        3        /* 4 shades */
-#define c_white        (n_hue * n_light)
-#define c_black        (c_white + 1)
-#define n_colors    (c_black + 1)
-/* internal used index for filling areas: */
-#define c_mark_index    9999
-
-#define adv_col(c, h, l)  (((((c) % 6) + (h)) % 6) \
-                + (6 * ((((c) / 6) + (l)) % 3)))
-
-static struct c_color {
-    int col;            /* rgb color */
-    char *l_name;            /* long color name */
-    char *s_name;            /* short color name */
-    int c_idx;            /* our internal color index */
-} c_colors[] = {
-
-        {0xFFC0C0, "light red",     "lR", 0},
-        {0xFFFFC0, "light yellow",  "lY", 1},
-        {0xC0FFC0, "light green",   "lG", 2},
-        {0xC0FFFF, "light cyan",    "lC", 3},
-        {0xC0C0FF, "light blue",    "lB", 4},
-        {0xFFC0FF, "light magenta", "lM", 5},
-
-        {0xFF0000, "red",           "nR", 6},
-        {0xFFFF00, "yellow",        "nY", 7},
-        {0x00FF00, "green",         "nG", 8},
-        {0x00FFFF, "cyan",          "nC", 9},
-        {0x0000FF, "blue",          "nB", 10},
-        {0xFF00FF, "magenta",       "nM", 11},
-
-        {0xC00000, "dark red",      "dR", 12},
-        {0xC0C000, "dark yellow",   "dY", 13},
-        {0x00C000, "dark green",    "dG", 14},
-        {0x00C0C0, "dark cyan",     "dC", 15},
-        {0x0000C0, "dark blue",     "dB", 16},
-        {0xC000C0, "dark magenta",  "dM", 17},
-
-        {0xFFFFFF, "white",         "WW", c_white},
-        {0x000000, "black",         "BB", c_black}
-};
-
-
-/*
- * execution states:
- */
-int p_dir_pointer;        /* DP: p_{left, right, up, down} */
-int p_codel_chooser;        /* CC: p_left or p_right */
-int p_xpos, p_ypos;        /* execution position */
-
-#define p_left            'l'
-#define p_right            'r'
-#define p_up            'u'
-#define p_down            'd'
-
-#define toggle_cc(cc)    ((cc) == 'r' ? 'l' : 'r')
-
-#define turn_dp(dp)    ((dp) == 'r' ? 'd' : ((dp) == 'd' ? 'l' : \
-             ((dp) == 'l' ? 'u' : 'r')))
-#define turn_dp_inv(dp)    ((dp) == 'r' ? 'u' : ((dp) == 'u' ? 'l' : \
-             ((dp) == 'l' ? 'd' : 'r')))
-#define dp_dx(dp)    ((dp) == 'l' ? -1 : ((dp) == 'r' ? 1 : 0))
-#define dp_dy(dp)    ((dp) == 'u' ? -1 : ((dp) == 'd' ? 1 : 0))
-
-/* informal step counter: */
-unsigned exec_step = 0;
-
-/*
- * stack space for runtime action: 
- */
-long *stack = 0;        /* stack space */
-int num_stack = 0;        /* current number of values on stack */
-int max_stack = 0;        /* max size of stack allocated */
-
-void
-alloc_stack_space(int val) {
-    if (val <= max_stack) {
-        return;
-    } else if (!stack) {
-        max_stack = val;
-        stack = (long *) calloc(val, sizeof(long));
-    } else {
-        long *new_stack = (long *) calloc(val, sizeof(long));
-        memcpy(new_stack, stack, num_stack * sizeof(long));
-        free(stack);
-        max_stack = val;
-        stack = new_stack;
-    }
-    dprintf("deb: stack extended to %d entries (num_stack is %d)\n",
-            max_stack, num_stack);
+int adv_col(int c, int h, int l) {
+    return (((((c) % 6) + (h)) % 6) + (6 * ((((c) / 6) + (l)) % 3)));
 }
 
-
-void
-tdump_stack() {
-    int i;
-
-    if (num_stack == 0) {
-        tprintf("trace: stack is empty");
-    } else {
-        tprintf("trace: stack (%d values):", num_stack);
-    }
-    for (i = 0; i < num_stack; i++) {
-        tprintf(" %ld", stack[num_stack - i - 1]);
-    }
-    tprintf("\n");
-}
-
-
-/*
- * extract color component:
- */
-int
-get_hue(int val) {
-    if (val < (n_hue * n_light)) {
-        return val % n_hue;
-    }
-    if (val == c_black || val == c_white) {
-        return val;
-    }
-
-    fprintf(stderr, "no such color: col %d\n", val);
-    exit(-99);
-}
-
-
-/*
- * extract lightness component:
- */
-int
-get_light(int val) {
-    if (val < c_black) {
-        return val / n_hue;
-    }
-
-    fprintf(stderr, "no such color: col %d\n", val);
-    exit(-99);
-}
-
-
-int
-get_color_idx(int col) {
-    int i;
-
-    for (i = 0; i < n_colors; i++) {
-        if (col == c_colors[i].col) {
-            return c_colors[i].c_idx;
-        }
-    }
-    return -1;
-}
-
-
-/*
- *
- *
- */
-char *
-cell2str(int idx) {
-    int i;
-
-    /* internal special index w/o real color: */
-    if (idx == c_mark_index) {
-        return "II";
-    }
-
-    for (i = 0; i < n_colors; i++) {
-        if (idx == c_colors[i].c_idx) {
-            return c_colors[i].s_name;
-        }
-    }
-
-    fprintf(stderr, "unknown color index %d\n", idx);
-    return "??";
-}
-
-
-#ifdef DEBUG
-/*
- * slower call for nicer debugging: 
- */
-int
-cell_idx (int x, int y) 
-{
-  if (x < 0 || x >= width || y < 0 || y >= height) {
-    return -1;
-  }
-
-  return y * width + x;
-}
-#else
-# define cell_idx(x, y)        (((x) < 0 || (x) >= width \
-                  || (y) < 0 || (y) >= height) ? -1 : \
-                (y) * width + (x))
-#endif
-
-int
-get_cell(int x, int y) {
-    int c_idx = cell_idx (x, y);
-    if (c_idx < 0) {
-        if (debug > 1) printf("deb: bad index for x=%d, y=%d\n", x, y);
-        return -1;
-    }
-    return cells[c_idx];
-}
-
-
-void
-set_cell(int x, int y, int val) {
-    int c_idx;
-
-    c_idx = cell_idx (x, y);
-    if (c_idx < 0) {
-        alloc_cells(x >= width ? x + 1 : width, y >= height ? y + 1 : height);
-    }
-
-    if ((c_idx = cell_idx (x, y)) < 0) {
-        exit(-99);            /* internal error */
-    }
-    cells[c_idx] = val;
-}
-
-
-void
-alloc_cells(int n_width, int n_height) {
-    int i, j;
-    int *n_cells = (int *) malloc(n_width * n_height * sizeof(int));
-
-    for (j = 0; j < n_height; j++) {
-        for (i = 0; i < n_width; i++) {
-            n_cells[j * n_width + i] = c_black;
-        }
-    }
-
-    if (!n_cells) {
-        fprintf(stderr, "out of memory: cannot allocate %d * %d cells\n",
-                n_height, n_width);
-        exit(-99);
-    }
-
-    if (cells) {
-        for (j = 0; j < height; j++) {
-            for (i = 0; i < width; i++) {
-                n_cells[j * n_width + i] = cells[j * width + i];
-            }
-        }
-        free(cells);
-    }
-
-    cells = n_cells;
-    width = n_width;
-    height = n_height;
-}
-
-
-void
-dump_cells() {
+void dump_cells() {
     int i, j;
     for (j = 0; j < height; j++) {
         for (i = 0; i < width; i++) {
@@ -572,9 +521,6 @@ dump_cells() {
         printf("\n");
     }
 }
-
-
-
 
 /*
  * graphical trace output:
@@ -600,17 +546,17 @@ dump_cells() {
 #include <gdfonts.h>
 #include <gdfontt.h>
 
-#define i_sign(x)    ((x) < 0 ? -1 : ((x) > 0 ? 1 : 0))
-#define i_abs(x)     ((x) < 0 ? -(x) : (x))
-#define i_max(x, y)  ((x) > (y) ? (x) : (y))
+#define i_sign(x) ((x) < 0 ? -1 : ((x) > 0 ? 1 : 0))
+#define i_abs(x) ((x) < 0 ? -(x) : (x))
+#define i_max(x, y) ((x) > (y) ? (x) : (y))
 
 gdImagePtr im;
-int gd_col [n_colors];
+int gd_col[n_colors];
 int gd_white;
 int gd_black;
 int gd_nase;
 int gd_step;
-int gd_grey [8];		/* grey indices */
+int gd_grey[8]; /* grey indices */
 
 gdFontPtr gdft, gdfs;
 
@@ -622,66 +568,39 @@ int gd_try_xoff = 0;
 int gd_try_yoff = 0;
 int gd_try_dcol = 0;
 
-
-void
-gd_try_init ()
-{
-  gd_try_xoff = 0;
-  gd_try_yoff = 0;
-  gd_try_dcol = 0;
+void gd_try_init() {
+    gd_try_xoff = 0;
+    gd_try_yoff = 0;
+    gd_try_dcol = 0;
 }
 
+void gd_arrow_pp(int x1, int y1, int dp, int gd_col) {
+    int i;
 
-void
-gd_arrow_pp (int x1, int y1, int dp, int gd_col)
-{
-  int i;
-
-  for (i = 0; i < 3; i++) {
-    gdImageLine (im, x1 - i * dp_dx(dp) + i * dp_dy(dp),
-         y1 + i * dp_dx(dp) - i * dp_dy(dp),
-         x1 - i * dp_dx(dp) - i * dp_dy(dp),
-         y1 - i * dp_dx(dp) - i * dp_dy(dp), gd_col);
-  }
+    for (i = 0; i < 3; i++) {
+        gdImageLine(im, x1 - i * dp_dx(dp) + i * dp_dy(dp),
+                    y1 + i * dp_dx(dp) - i * dp_dy(dp),
+                    x1 - i * dp_dx(dp) - i * dp_dy(dp),
+                    y1 - i * dp_dx(dp) - i * dp_dy(dp), gd_col);
+    }
 }
 
+void gd_arrow(int x1, int y1, int x2, int y2, int dp, int gd_col) {
+    gdPoint pts[3];
 
+    /* base line: */
+    gdImageLine(im, x1, y1, x2, y2, gd_col);
 
-void
-gd_arrow (int x1, int y1, int x2, int y2, int dp, int gd_col)
-{
-#if 0
-  int i;
+    pts[0].x = x2;
+    pts[0].y = y2;
+    pts[1].x = (x2 + x1) / 2 - 2 * dp_dy(dp);
+    pts[1].y = (y2 + y1) / 2 - 2 * dp_dx(dp);
+    pts[2].x = (x2 + x1) / 2 + 2 * dp_dy(dp);
+    pts[2].y = (y2 + y1) / 2 + 2 * dp_dx(dp);
 
-  gdImageLine (im, x1, y1, x2, y2, gd_col);
-
-  for (i = 0; i < 3; i++) {
-  gdImageLine (im, x2 - i * dp_dx(dp) + i * dp_dy(dp),
-           y2 + i * dp_dx(dp) - i * dp_dy(dp),
-           x2 - i * dp_dx(dp) - i * dp_dy(dp),
-           y2 - i * dp_dx(dp) - i * dp_dy(dp), gd_col);
-  }
-  /* gdImageLine (im, x1 - 2, y1 + 2, x2 + 2, y2 + 2, gd_col); */
-
-#else
-  gdPoint pts [3];
-
-  /* base line: */
-  gdImageLine (im, x1, y1, x2, y2, gd_col);
-
-  pts [0].x = x2;
-  pts [0].y = y2;
-  pts [1].x = (x2 + x1) / 2 - 2 * dp_dy(dp);
-  pts [1].y = (y2 + y1) / 2 - 2 * dp_dx(dp);
-  pts [2].x = (x2 + x1) / 2 + 2 * dp_dy(dp);
-  pts [2].y = (y2 + y1) / 2 + 2 * dp_dx(dp);
-
-  /* arrow head: */
-  gdImageFilledPolygon (im, pts, 3, gd_col);
-#endif
+    /* arrow head: */
+    gdImageFilledPolygon(im, pts, 3, gd_col);
 }
-
-
 
 /*
  * ok, here is another try:
@@ -691,385 +610,461 @@ gd_arrow (int x1, int y1, int x2, int y2, int dp, int gd_col)
  * same for the trace and try numbers.
  */
 
-gdPoint r_pts [4] = { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 1, 0 } };
-gdPoint l_pts [4] = { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 1, 2 } };
-gdPoint d_pts [6] = { { 0, 2 }, { 0, 3 }, { 1, 0 }, { 1, 1 },
-              { 1, 2 }, { 1, 3 } };
-gdPoint u_pts [7] = { { 0, 0 }, { 0, 1 }, { 0, 2 },
-              { 1, 2 }, { 2, 0 }, { 2, 1 }, { 2, 2 } };
+gdPoint r_pts[4] = {{0, 0},
+                    {0, 1},
+                    {0, 2},
+                    {1, 0}};
+gdPoint l_pts[4] = {{0, 0},
+                    {0, 1},
+                    {0, 2},
+                    {1, 2}};
+gdPoint d_pts[6] = {{0, 2},
+                    {0, 3},
+                    {1, 0},
+                    {1, 1},
+                    {1, 2},
+                    {1, 3}};
+gdPoint u_pts[7] = {{0, 0},
+                    {0, 1},
+                    {0, 2},
+                    {1, 2},
+                    {2, 0},
+                    {2, 1},
+                    {2, 2}};
 
-gdPoint num_pts [10][15] = {
-  { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 4 },
-    { 1, 0 }, { 1, 4 },
-    { 2, 0 }, { 2, 1 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, },
-  { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 4 } },
-  { { 0, 0 }, { 0, 2 }, { 0, 3 }, { 0, 4 },
-    { 1, 0 }, { 1, 1 }, { 1, 2 }, { 1, 4 }, },
-  { { 0, 0 }, { 0, 2 }, { 0, 4 },
-    { 1, 0 }, { 1, 1 }, { 1, 2 }, { 1, 3 }, { 1, 4 }, },
-  { { 0, 2 }, { 0, 3 }, { 1, 1 }, { 1, 3 },
-    { 2, 0 }, { 2, 1 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, },
-  { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 4 },
-    { 1, 0 }, { 1, 2 }, { 1, 3 }, { 1, 4 }, },
-  { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 4 },
-    { 1, 2 }, { 1, 4 },
-    { 2, 2 }, { 2, 3 }, { 2, 4 }, },
-  { { 0, 0 }, { 0, 3 }, { 0, 4 },
-    { 1, 0 }, { 1, 1 }, { 1, 2 }, },
-  { { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 4 },
-    { 1, 0 }, { 1, 2 }, { 1, 4 },
-    { 2, 0 }, { 2, 1 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, },
-  { { 0, 0}, { 0, 1 }, { 0, 2 }, { 1, 0 }, { 1, 2 },
-    { 2, 0 }, { 2, 1 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, } };
+gdPoint num_pts[10][15] = {
+        {
+                {0, 0},
+                        {0, 1},
+                                {0, 2},
+                                        {0, 3},
+                                                {0, 4},
+                                                        {1, 0},
+                                                                {1, 4},
+                                                                        {2, 0},
+                                                                                {2, 1},
+                {2, 2},
+                {2, 3},
+                {2, 4},
+        },
+        {       {0, 0}, {0, 1}, {0, 2}, {0, 3}, {0, 4}},
+        {
+                {0, 0}, {0, 2}, {0, 3}, {0, 4}, {1, 0}, {1, 1}, {1, 2}, {1, 4},
+        },
+        {
+                {0, 0}, {0, 2}, {0, 4}, {1, 0}, {1, 1}, {1, 2}, {1, 3}, {1, 4},
+        },
+        {
+                {0, 2}, {0, 3}, {1, 1}, {1, 3}, {2, 0}, {2, 1}, {2, 2}, {2, 3}, {2, 4},
+        },
+        {
+                {0, 0}, {0, 1}, {0, 2}, {0, 4}, {1, 0}, {1, 2}, {1, 3}, {1, 4},
+        },
+        {
+                {0, 0},
+                        {0, 1},
+                                {0, 2},
+                                        {0, 3},
+                                                {0, 4},
+                                                        {1, 2},
+                                                                {1, 4},
+                                                                        {2, 2},
+                                                                                {2, 3},
+                {2, 4},
+        },
+        {
+                {0, 0}, {0, 3}, {0, 4}, {1, 0}, {1, 1}, {1, 2},
+        },
+        {
+                {0, 0},
+                        {0, 1},
+                                {0, 2},
+                                        {0, 3},
+                                                {0, 4},
+                                                        {1, 0},
+                                                                {1, 2},
+                                                                        {1, 4},
+                                                                                {2, 0},
+                {2, 1},
+                {2, 2},
+                {2, 3},
+                {2, 4},
+        },
+        {
+                {0, 0},
+                        {0, 1},
+                                {0, 2},
+                                        {1, 0},
+                                                {1, 2},
+                                                        {2, 0},
+                                                                {2, 1},
+                                                                        {2, 2},
+                                                                                {2, 3},
+                {2, 4},
+        }};
 
-int num_pts_plen [10] = { 12, 5, 8, 8, 9, 8, 10, 6, 13, 11 };
+int num_pts_plen[10] = {12, 5, 8, 8, 9, 8, 10, 6, 13, 11};
 
-#define gd_ch_pts(c)  (c == 'r' ? r_pts : (c == 'l' ? l_pts : \
-               (c == 'd' ? d_pts : (c == 'u' ? u_pts : \
-                (c >= 0 && c <= 9 ? num_pts [c] : 0)))))
-#define gd_ch_plen(c) (c == 'r' ? 4 : (c == 'l' ? 4 : (c == 'd' ? 6 : \
-           c == 'u' ? 7 : (c >= 0 && c <= 9 ? num_pts_plen[c] : 0))))
-#define gd_ch_pw(c)   (c == 0 || c == 4 || c == 6 || c > 7 ? 3 : \
-               (c == 1 ? 1 : 2))
-
-
-void
-gd_paint_ch (int x1, int y1, int ch, int gd_col)
-{
-  gdPoint *pts;
-  int i, n_pts;
-
-  pts = gd_ch_pts (ch);
-  n_pts = gd_ch_plen (ch);
-
-  for (i = 0; i < n_pts; i++) {
-    gdImageSetPixel (im, x1 + pts [i].x, y1 + pts [i].y, gd_col);
-  }
-
+gdPoint *gd_ch_pts(int c) {
+    if (c == 'r') {
+        return r_pts;
+    } else {
+        if (c == 'l') {
+            return l_pts;
+        } else {
+            if (c == 'd') {
+                return d_pts;
+            } else {
+                if (c == 'u') {
+                    return u_pts;
+                } else {
+                    if (c >= 0 && c <= 9) {
+                        return num_pts[c];
+                    } else {
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
 }
 
+int gd_ch_plen(int c) {
+    if (c == 'r') {
+        return 4;
+    } else {
+        if (c == 'l') {
+            return 4;
+        } else {
+            if (c == 'd') {
+                return 6;
+            } else {
+                if (c == 'u') {
+                    return 7;
+                } else {
+                    if (c >= 0 && c <= 9) {
+                        return num_pts_plen[c];
+                    } else {
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+}
 
+int gd_ch_pw(int c) {
+    if (c == 0 || c == 4 || c == 6 || c > 7) {
+        return 3;
+    } else {
+        if (c == 1) {
+            return 1;
+        } else {
+            return 2;
+        }
+    }
+}
 
-void
-gd_paint_num (int x1, int y1, int num, int gd_col)
-{
-  gdPoint *pts;
-  int len, div, n, i, w, n_pts;
+void gd_paint_ch(int x1, int y1, int ch, int gd_col) {
+    gdPoint *pts;
+    int i, n_pts;
 
-  div = 1;
-  for (n = num, len = 0; (! len && ! n) || n > 0; len++) {
-    n = n / 10;
-    div =  div * 10;
-  }
-
-  while (len-- > 0) {
-
-    div = div / 10;
-    n = num / div;
-    num = num - n * div;
-
-    pts = gd_ch_pts (n);
-    n_pts = gd_ch_plen (n);
-    w = gd_ch_pw(n);
+    pts = gd_ch_pts(ch);
+    n_pts = gd_ch_plen(ch);
 
     for (i = 0; i < n_pts; i++) {
-      gdImageSetPixel (im, x1 + pts [i].x, y1 + pts [i].y, gd_col);
+        gdImageSetPixel(im, x1 + pts[i].x, y1 + pts[i].y, gd_col);
     }
-    x1 += w + 1;
-  }
 }
 
+void gd_paint_num(int x1, int y1, int num, int gd_col) {
+    gdPoint *pts;
+    int len, div, n, i, w, n_pts;
 
-
-void
-gd_step_num_pp (int x, int y)
-{
-  if (c_xy <= pp_size) {
-    /* only pixl numbers if we are low on space: */
-    gd_paint_num (x, y, exec_step, gd_step);
-  }
-}
-
-
-
-
-void
-gd_alloc_piet_colors (gdImagePtr im, int *col)
-{
-  int i;
-
-  for (i = 0; i < n_colors; i++) {
-    int r = c_colors [i].col >> 16;
-    int g = (c_colors [i].col >> 8) & 0xff;
-    int b = c_colors [i].col & 0xff;
-    col [i] = gdImageColorAllocate (im, r, g, b);
-  }
-}
-
-
-void
-gd_init ()
-{
-  int i, j;
-
-  im = gdImageCreate (width * c_xy, height * c_xy);
-
-  /* background color: */
-  gdImageColorAllocate (im, 255, 255, 255);
-
-  gd_alloc_piet_colors (im, gd_col);
-
-  gd_black = gd_col [c_black];
-  gd_white = gd_col [c_white];
-  gd_step = gdImageColorAllocate (im, 180, 180, 180);
-  gd_nase = gdImageColorAllocate (im, 85, 75, 255);
-
-  gdft = gdFontTiny;
-  gdfs = gdFontSmall;
-
-  /* create some grey values: maybe helpful... */
-  for (i = 0; i < 8; i++) {
-    int c = 72 + (48 / 8) * i;
-    gd_grey [i] = gdImageColorAllocate (im, c, c, c);
-  }
-
-  for (j = 0; j < height; j++) {
-    for (i = 0; i < width; i++) {
-      gdImageFilledRectangle (im, i * c_xy, j * c_xy, (i + 1) * c_xy - 1,
-                  (j + 1) * c_xy - 1, gd_col [get_cell (i, j)]);
+    div = 1;
+    for (n = num, len = 0; (!len && !n) || n > 0; len++) {
+        n = n / 10;
+        div = div * 10;
     }
-  }
 
-  /* start circle: */
-  if (gd_trace_end > 0) {
-    /* set start dot only if something to trace is wanted: */
-    gdImageArc (im, c_xy / 2, c_xy / 2, c_xy / 7, c_xy / 7, 0, 360, gd_black);
-  }
+    while (len-- > 0) {
+
+        div = div / 10;
+        n = num / div;
+        num = num - n * div;
+
+        pts = gd_ch_pts(n);
+        n_pts = gd_ch_plen(n);
+        w = gd_ch_pw(n);
+
+        for (i = 0; i < n_pts; i++) {
+            gdImageSetPixel(im, x1 + pts[i].x, y1 + pts[i].y, gd_col);
+        }
+        x1 += w + 1;
+    }
 }
 
-
-void
-gd_save ()
-{
-  FILE *pngout;
-
-  if (! (pngout = fopen (gd_trace_filename, "wb"))) {
-    fprintf (stderr, "cannot open %s for writing; reason: %s\n",
-         gd_trace_filename, strerror (errno));
-    do_gdtrace = 0;
-    return;
-  }
-
-  gdImagePng (im, pngout);
-  fclose (pngout);
+void gd_step_num_pp(int x, int y) {
+    if (c_xy <= pp_size) {
+        /* only pixl numbers if we are low on space: */
+        gd_paint_num(x, y, exec_step, gd_step);
+    }
 }
 
+void gd_alloc_piet_colors(gdImagePtr im, int *col) {
+    int i;
+
+    for (i = 0; i < n_colors; i++) {
+        int r = c_colors[i].col >> 16;
+        int g = (c_colors[i].col >> 8) & 0xff;
+        int b = c_colors[i].col & 0xff;
+        col[i] = gdImageColorAllocate(im, r, g, b);
+    }
+}
+
+void gd_init() {
+    int i, j;
+
+    im = gdImageCreate(width * c_xy, height * c_xy);
+
+    /* background color: */
+    gdImageColorAllocate(im, 255, 255, 255);
+
+    gd_alloc_piet_colors(im, gd_col);
+
+    gd_black = gd_col[c_black];
+    gd_white = gd_col[c_white];
+    gd_step = gdImageColorAllocate(im, 180, 180, 180);
+    gd_nase = gdImageColorAllocate(im, 85, 75, 255);
+
+    gdft = gdFontTiny;
+    gdfs = gdFontSmall;
+
+    /* create some grey values: maybe helpful... */
+    for (i = 0; i < 8; i++) {
+        int c = 72 + (48 / 8) * i;
+        gd_grey[i] = gdImageColorAllocate(im, c, c, c);
+    }
+
+    for (j = 0; j < height; j++) {
+        for (i = 0; i < width; i++) {
+            gdImageFilledRectangle(im, i * c_xy, j * c_xy, (i + 1) * c_xy - 1,
+                                   (j + 1) * c_xy - 1, gd_col[get_cell(i, j)]);
+        }
+    }
+
+    /* start circle: */
+    if (gd_trace_end > 0) {
+        /* set start dot only if something to trace is wanted: */
+        gdImageArc(im, c_xy / 2, c_xy / 2, c_xy / 7, c_xy / 7, 0, 360, gd_black);
+    }
+}
+
+void gd_save() {
+    FILE *pngout;
+
+    if (!(pngout = fopen(gd_trace_filename, "wb"))) {
+        fprintf(stderr, "cannot open %s for writing; reason: %s\n",
+                gd_trace_filename, strerror(errno));
+        do_gdtrace = 0;
+        return;
+    }
+
+    gdImagePng(im, pngout);
+    fclose(pngout);
+}
 
 /*
  * like gd_try_step but with p(ixel)p(ainting) for smaller output size:
  */
-void
-gd_try_step_pp (int try, int n_x, int n_y, int dp, int cc)
-{
-  int x1 = n_x * c_xy;
-  int y1 = n_y * c_xy;
-  int x2, y2, x3, y3;
+void gd_try_step_pp(int try, int n_x, int n_y, int dp, int cc) {
+    int x1 = n_x * c_xy;
+    int y1 = n_y * c_xy;
+    int x2, y2, x3, y3;
 
-  if (dp_dx(dp) < 0) {
-    /* left: */
-    y1 += c_xy - 3;
-    if (cc == 'r') {
-      y1 -= 6;
+    if (dp_dx(dp) < 0) {
+        /* left: */
+        y1 += c_xy - 3;
+        if (cc == 'r') {
+            y1 -= 6;
+        }
+        x3 = x1 + 4;
+        y3 = y1 - 3;
+        x2 = x3 + 6;
+        y2 = y3;
+    } else if (dp_dx(dp) > 0) {
+        /* right: */
+        x1 += c_xy - 1;
+        y1 += 3;
+        if (cc == 'r') {
+            y1 += 6;
+        }
+        x3 = x1 - 8;
+        y3 = y1 - 2;
+        x2 = x3 - 4;
+        y2 = y3;
+    } else if (dp_dy(dp) < 0) {
+        /* up: */
+        x1 += 3;
+        if (cc == 'r') {
+            x1 += 6;
+        }
+        x3 = x1 - 2;
+        y3 = y1 + 4;
+        x2 = x1 - 1;
+        y2 = y3 + 5;
+    } else {
+        /* down: */
+        x1 += c_xy - 1;
+        y1 += c_xy - 1;
+        x1 -= 3;
+        if (cc == 'r') {
+            x1 -= 6;
+        }
+        x3 = x1 - 2;
+        y3 = y1 - 8;
+        x2 = x1;
+        y2 = y3 - 6;
     }
-    x3 = x1 + 4;
-    y3 = y1 - 3;
-    x2 = x3 + 6;
-    y2 = y3;
-  } else if (dp_dx(dp) > 0) {
-    /* right: */
-    x1 += c_xy - 1;
-    y1 += 3;
-    if (cc == 'r') {
-      y1 += 6;
-    }
-    x3 = x1 - 8;
-    y3 = y1 - 2;
-    x2 = x3 - 4;
-    y2 = y3;
-  } else if (dp_dy(dp) < 0) {
-    /* up: */
-    x1 += 3;
-    if (cc == 'r') {
-      x1 += 6;
-    }
-    x3 = x1 - 2;
-    y3 = y1 + 4;
-    x2 = x1 - 1;
-    y2 = y3 + 5;
-  } else {
-    /* down: */
-    x1 += c_xy - 1;
-    y1 += c_xy - 1;
-    x1 -= 3;
-    if (cc == 'r') {
-      x1 -= 6;
-    }
-    x3 = x1 - 2;
-    y3 = y1 - 8;
-    x2 = x1;
-    y2 = y3 - 6;
-  }
 
-  gd_arrow_pp (x1 + gd_try_xoff, y1 + gd_try_yoff,  dp, gd_grey [gd_try_dcol]);
+    gd_arrow_pp(x1 + gd_try_xoff, y1 + gd_try_yoff, dp, gd_grey[gd_try_dcol]);
 
-  gd_paint_ch (x3, y3, dp, gd_grey [gd_try_dcol]);
-  gd_paint_ch (x3 + 3 + (dp == 'u' ? 1 : 0), y3 + 2, cc,
-           gd_grey [gd_try_dcol]);
+    gd_paint_ch(x3, y3, dp, gd_grey[gd_try_dcol]);
+    gd_paint_ch(x3 + 3 + (dp == 'u' ? 1 : 0), y3 + 2, cc, gd_grey[gd_try_dcol]);
 
-  gd_paint_num (x2, y2, try, gd_grey [gd_try_dcol]);
+    gd_paint_num(x2, y2, try, gd_grey[gd_try_dcol]);
 
-
-  /* experimental: add some increment: */
-  /** gd_try_xoff += 3;
-      gd_try_yoff += 5;
-  **/
-  /* experimental: increment color value: */
-  gd_try_dcol = (gd_try_dcol + 1) % 8;
+    /* experimental: add some increment: */
+    /** gd_try_xoff += 3;
+        gd_try_yoff += 5;
+    **/
+    /* experimental: increment color value: */
+    gd_try_dcol = (gd_try_dcol + 1) % 8;
 }
-
 
 /*
  * paint trace info about this try:
  */
-void
-gd_try_step (int exec_step, int tries, int n_x, int n_y,
-        int dp, int cc)
-{
-  char tmp [128];
-  int a_len = i_max((c_xy * 1) / 4, 6);
+void gd_try_step(int exec_step, int tries, int n_x, int n_y, int dp, int cc) {
+    char tmp[128];
+    int a_len = i_max((c_xy * 1) / 4, 6);
 
-  int x1 = (n_x * c_xy) + c_xy / 2 + dp_dx(dp) * a_len;
-  int y1 = (n_y * c_xy) + c_xy / 2 + dp_dy(dp) * a_len;
-  int x2 = (n_x * c_xy) + c_xy / 2 + dp_dx(dp) * (c_xy / 2 - 2);
-  int y2 = (n_y * c_xy) + c_xy / 2 + dp_dy(dp) * (c_xy / 2 - 2);
-  int x3, y3;
+    int x1 = (n_x * c_xy) + c_xy / 2 + dp_dx(dp) * a_len;
+    int y1 = (n_y * c_xy) + c_xy / 2 + dp_dy(dp) * a_len;
+    int x2 = (n_x * c_xy) + c_xy / 2 + dp_dx(dp) * (c_xy / 2 - 2);
+    int y2 = (n_y * c_xy) + c_xy / 2 + dp_dy(dp) * (c_xy / 2 - 2);
+    int x3, y3;
 
-  if (c_xy < pp_size) {
-    /* try pixel painting: */
-    gd_try_step_pp (tries, n_x, n_y, dp, cc);
-    return;
-  }
-
-  sprintf (tmp, "%d.%d", exec_step, tries);
-
-  if (dp_dx(dp) < 0) {
-    /* left: */
-    if (cc == 'r') {
-      y1 -= gdft->h * 2 + 1;
-      y2 -= gdft->h * 2 + 1;
+    if (c_xy < pp_size) {
+        /* try pixel painting: */
+        gd_try_step_pp(tries, n_x, n_y, dp, cc);
+        return;
     }
-    y1 += (c_xy / 2) - 5;
-    y2 += (c_xy / 2) - 5;
-    x3 = x2;
-    y3 = y2 - 2 * gdft->h;
-  } else if (dp_dx(dp) > 0) {
-    /* right: */
-    if (cc == 'r') {
-      y1 += gdft->h * 2 + 1;
-      y2 += gdft->h * 2 + 1;
-    }
-    y1 -= (c_xy / 2) - 5;
-    y2 -= (c_xy / 2) - 5;
-    x3 = x2 - strlen (tmp) * gdft->w;
-    y3 = y1 + 2;
-  } else if (dp_dy(dp) < 0) {
-    /* up: */
-    if (cc == 'r') {
-      x1 += gdft->w * strlen (tmp) + 3;
-      x2 += gdft->w * strlen (tmp) + 3;
-    }
-    x1 -= (c_xy / 2) - 5;
-    x2 -= (c_xy / 2) - 5;
-    x3 = x2 + 3;
-    y3 = y2;
-  } else {
-    /* down: */
-    if (cc == 'r') {
-      x1 -= gdft->w * strlen (tmp) + 3;
-      x2 -= gdft->w * strlen (tmp) + 3;
-    }
-    x1 += (c_xy / 2) - 5;
-    x2 += (c_xy / 2) - 5;
-    x3 = x1 - strlen (tmp) * gdft->w - 2;
-    y3 = y2 - 2 * gdft->h + 2;
-  }
 
-  gd_arrow (x1 + gd_try_xoff, y1 + gd_try_yoff,
-        x2 + gd_try_xoff, y2 + gd_try_yoff, dp, gd_grey [gd_try_dcol]);
+    sprintf(tmp, "%d.%d", exec_step, tries);
 
-  gdImageString (im, gdft, x3 + gd_try_xoff, y3 + gd_try_yoff,
-         (unsigned char *) tmp,
-         gd_grey [gd_try_dcol]);
+    if (dp_dx(dp) < 0) {
+        /* left: */
+        if (cc == 'r') {
+            y1 -= gdft->h * 2 + 1;
+            y2 -= gdft->h * 2 + 1;
+        }
+        y1 += (c_xy / 2) - 5;
+        y2 += (c_xy / 2) - 5;
+        x3 = x2;
+        y3 = y2 - 2 * gdft->h;
+    } else if (dp_dx(dp) > 0) {
+        /* right: */
+        if (cc == 'r') {
+            y1 += gdft->h * 2 + 1;
+            y2 += gdft->h * 2 + 1;
+        }
+        y1 -= (c_xy / 2) - 5;
+        y2 -= (c_xy / 2) - 5;
+        x3 = x2 - strlen(tmp) * gdft->w;
+        y3 = y1 + 2;
+    } else if (dp_dy(dp) < 0) {
+        /* up: */
+        if (cc == 'r') {
+            x1 += gdft->w * strlen(tmp) + 3;
+            x2 += gdft->w * strlen(tmp) + 3;
+        }
+        x1 -= (c_xy / 2) - 5;
+        x2 -= (c_xy / 2) - 5;
+        x3 = x2 + 3;
+        y3 = y2;
+    } else {
+        /* down: */
+        if (cc == 'r') {
+            x1 -= gdft->w * strlen(tmp) + 3;
+            x2 -= gdft->w * strlen(tmp) + 3;
+        }
+        x1 += (c_xy / 2) - 5;
+        x2 += (c_xy / 2) - 5;
+        x3 = x1 - strlen(tmp) * gdft->w - 2;
+        y3 = y2 - 2 * gdft->h + 2;
+    }
+
+    gd_arrow(x1 + gd_try_xoff, y1 + gd_try_yoff, x2 + gd_try_xoff,
+             y2 + gd_try_yoff, dp, gd_grey[gd_try_dcol]);
+
+    gdImageString(im, gdft, x3 + gd_try_xoff, y3 + gd_try_yoff,
+                  (unsigned char *) tmp, gd_grey[gd_try_dcol]);
 
 #if 0
-  gd_paint_dpcc (x1, y1, dp, cc, gd_grey [gd_try_dcol]);
+    gd_paint_dpcc (x1, y1, dp, cc, gd_grey [gd_try_dcol]);
 #else
-  sprintf (tmp, "%c/%c", dp, cc);
-  gdImageString (im, gdft, x3 + gd_try_xoff, y3 + gd_try_yoff + gdft->h - 1,
-         (unsigned char *) tmp,
-         gd_grey [gd_try_dcol]);
+    sprintf(tmp, "%c/%c", dp, cc);
+    gdImageString(im, gdft, x3 + gd_try_xoff, y3 + gd_try_yoff + gdft->h - 1,
+                  (unsigned char *) tmp, gd_grey[gd_try_dcol]);
 #endif
 
-  gd_try_dcol = (gd_try_dcol + 1) % 8;
+    gd_try_dcol = (gd_try_dcol + 1) % 8;
 }
 
+void gd_action(int p_x, int p_y, int n_x, int n_y, int a_x, int a_y,
+               char *msg) {
+    int x1 = (p_x * c_xy) + c_xy / 2;
+    int y1 = (p_y * c_xy) + c_xy / 2;
+    int x2 = (n_x * c_xy) + c_xy / 2;
+    int y2 = (n_y * c_xy) + c_xy / 2;
+    int x3 = (a_x * c_xy) + c_xy / 2;
+    int y3 = (a_y * c_xy) + c_xy / 2;
+    int x4 = x3 - 6;
+    int y4 = y3 - 7;
 
-void
-gd_action (int p_x, int p_y, int n_x, int n_y, int a_x, int a_y, char *msg)
-{
-  int x1 = (p_x * c_xy) + c_xy / 2;
-  int y1 = (p_y * c_xy) + c_xy / 2;
-  int x2 = (n_x * c_xy) + c_xy / 2;
-  int y2 = (n_y * c_xy) + c_xy / 2;
-  int x3 = (a_x * c_xy) + c_xy / 2;
-  int y3 = (a_y * c_xy) + c_xy / 2;
-  int x4 = x3 - 6;
-  int y4 = y3 - 7;
+    /* in the block: */
+    gdImageLine(im, x1, y1, x2, y2, gd_black);
+    /* step into new block: */
+    gdImageLine(im, x2, y2, x3, y3, gd_black);
 
-  /* in the block: */
-  gdImageLine (im, x1, y1, x2, y2, gd_black);
-  /* step into new block: */
-  gdImageLine (im, x2, y2, x3, y3, gd_black);
+    /* step circle: */
+    gdImageArc(im, x3, y3, c_xy / 7, c_xy / 7, 0, 360, gd_black);
 
-  /* step circle: */
-  gdImageArc (im, x3, y3, c_xy / 7, c_xy / 7, 0, 360, gd_black);
+    if (gd_trace_simple && c_xy < 11) {
+        /* makes no sense to print additional info: */
+        return;
+    }
 
-  if (gd_trace_simple && c_xy < 11) {
-    /* makes no sense to print additional info: */
-    return;
-  }
+    /* step number: */
+    gd_step_num_pp(x4, y4);
 
-  /* step number: */
-  gd_step_num_pp (x4, y4);
+    /* action string: */
+    if (x2 < x3) {
+        x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2;
+        y3 = (y2 + y3) / 2 + 1;
+    } else if (x2 > x3) {
+        x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2;
+        y3 = (y2 + y3) / 2 - gdft->h;
+    } else {
+        x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2 + 1;
+        y3 = (y2 + y3) / 2 - gdft->h / 2 - 1;
+    }
 
-  /* action string: */
-  if (x2 < x3) {
-    x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2;
-    y3 = (y2 + y3) / 2 + 1;
-  } else if (x2 > x3) {
-    x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2;
-    y3 = (y2 + y3) / 2 - gdft->h;
-  } else {
-    x3 = (x2 + x3) / 2 - (strlen(msg) * gdft->w) / 2 + 1;
-    y3 = (y2 + y3) / 2 - gdft->h / 2 - 1;
-  }
-
-  gdImageString (im, gdft, x3, y3, (unsigned char *) msg, gd_black);
+    gdImageString(im, gdft, x3, y3, (unsigned char *) msg, gd_black);
 }
 
 #endif /* GD */
-
-
 
 /*
  * png read support:
@@ -1080,13 +1075,13 @@ gd_action (int p_x, int p_y, int n_x, int n_y, int a_x, int a_y, char *msg)
 /*
  * without support, make dummy substitution avail:
  */
-#define read_png(f)	(-1)
+#define read_png(f) (-1)
 
 #else
 
-#include <png.h>
-#include <math.h>
 #include <emscripten/emscripten.h>
+#include <math.h>
+#include <png.h>
 
 png_byte bit_depth;
 
@@ -1095,8 +1090,7 @@ png_infop info_ptr;
 int number_of_passes;
 png_bytep *row_pointers;
 
-int
-read_png(char *fname) {
+int read_png(char *fname) {
     char header[8];
     FILE *in;
     int i, j, ncol, rc;
@@ -1108,18 +1102,17 @@ read_png(char *fname) {
     }
 
     if (!(in = fopen(fname, "rb"))) {
-        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname,
-                strerror(errno));
+        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname, strerror(errno));
         return -1;
     }
 
-    if (!in || (rc = fread(header, 1, 8, in)) != 8
-        || png_sig_cmp((unsigned char *) header, 0, 8) != 0) {
+    if (!in || (rc = fread(header, 1, 8, in)) != 8 ||
+        png_sig_cmp((unsigned char *) header, 0, 8) != 0) {
         return -1;
     }
 
-    if (!(png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0))
-        || !(info_ptr = png_create_info_struct(png_ptr))) {
+    if (!(png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0)) ||
+        !(info_ptr = png_create_info_struct(png_ptr))) {
         return -1;
     }
 
@@ -1127,8 +1120,9 @@ read_png(char *fname) {
     png_set_sig_bytes(png_ptr, 8);
 
     png_read_png(png_ptr, info_ptr,
-                 PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_STRIP_ALPHA
-                 | PNG_TRANSFORM_EXPAND, NULL);
+                 PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_STRIP_ALPHA |
+                 PNG_TRANSFORM_EXPAND,
+                 NULL);
     /**		| PNG_TRANSFORM_PACKING | PNG_TRANSFORM_SHIFT **/
 
     row_pointers = png_get_rows(png_ptr, info_ptr);
@@ -1157,7 +1151,8 @@ read_png(char *fname) {
 
             if (col_idx < 0) {
                 if (unknown_color == -1) {
-                    fprintf(stderr, "cannot read from `%s'; reason: invalid color found\n",
+                    fprintf(stderr,
+                            "cannot read from `%s'; reason: invalid color found\n",
                             fname);
                     return -1;
                 } else {
@@ -1175,7 +1170,6 @@ read_png(char *fname) {
 
 #endif /* PNG */
 
-
 /*
  * gif read support:
  */
@@ -1185,154 +1179,148 @@ read_png(char *fname) {
 /*
  * without support, make dummy substitution avail:
  */
-#define read_gif(f)    (-1)
+#define read_gif(f) (-1)
 
 #else
 
 #include <gif_lib.h>
 
 #if defined GIFLIB_MAJOR && GIFLIB_MAJOR >= 5
-static void PrintGifErrorStr(const char *str)
-{
+static void PrintGifErrorStr(const char *str) {
   fprintf(stderr, "Error in GIF library: %s\n", str);
 }
 
-static void PrintGifError(int errorCode)
-{
+static void PrintGifError(int errorCode) {
   PrintGifErrorStr(GifErrorString(errorCode));
 }
 #endif
 
-int
-read_gif (char *fname) 
-{
+int read_gif(char *fname) {
   GifFileType *gif;
   GifRecordType rtype;
   GifColorType *gcol;
   int i, j, width, height, col_idx;
 
-  if (! strcmp (fname, "-")) {
+  if (!strcmp(fname, "-")) {
     /* read from stdin: */
-    vprintf ("info: not trying to read a gif from stdin\n");
+    vprintf("info: not trying to read a gif from stdin\n");
     return -1;
   }
 
 #if defined GIFLIB_MAJOR && GIFLIB_MAJOR >= 5
   int errcode;
-  gif = DGifOpenFileName (fname, &errcode);
+  gif = DGifOpenFileName(fname, &errcode);
 #else
-  gif = DGifOpenFileName (fname);
+  gif = DGifOpenFileName(fname);
 #endif
 
   if (gif == NULL) {
     /* return error silently: */
     return -1;
   }
-  
-  if (DGifGetRecordType (gif, &rtype) == GIF_ERROR) {
+
+  if (DGifGetRecordType(gif, &rtype) == GIF_ERROR) {
 #if defined GIFLIB_MAJOR && GIFLIB_MAJOR >= 5
-    PrintGifError (gif->Error);
+    PrintGifError(gif->Error);
 #else
-    PrintGifError ();
+    PrintGifError();
 #endif
-#if defined GIFLIB_MAJOR && (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
-    DGifCloseFile (gif, &errcode);
+#if defined GIFLIB_MAJOR &&                                                    \
+    (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
+    DGifCloseFile(gif, &errcode);
 #else
-    DGifCloseFile (gif);
+    DGifCloseFile(gif);
 #endif
     return -1;
   }
 
-  if (rtype != IMAGE_DESC_RECORD_TYPE 
-      || DGifGetImageDesc (gif) == GIF_ERROR) {
-    fprintf (stderr, "error: unknown gif format - exiting\n");
-#if defined GIFLIB_MAJOR && (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
-    DGifCloseFile (gif, &errcode);
+  if (rtype != IMAGE_DESC_RECORD_TYPE || DGifGetImageDesc(gif) == GIF_ERROR) {
+    fprintf(stderr, "error: unknown gif format - exiting\n");
+#if defined GIFLIB_MAJOR &&                                                    \
+    (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
+    DGifCloseFile(gif, &errcode);
 #else
-    DGifCloseFile (gif);
+    DGifCloseFile(gif);
 #endif
-    exit (-1);
+    exit(-1);
   }
 
   if (gif->Image.Top != 0 || gif->Image.Left != 0) {
-    fprintf (stderr, "error: gif has top or left value != 0 - exiting\n");
-    exit (-1);
+    fprintf(stderr, "error: gif has top or left value != 0 - exiting\n");
+    exit(-1);
   }
 
   if (gif->Image.Interlace) {
-    fprintf (stderr, "error: interlaced gif not supported - exiting\n");
-    exit (-1);
+    fprintf(stderr, "error: interlaced gif not supported - exiting\n");
+    exit(-1);
   }
 
   /*
-   * now we should be prepared to read a simple formatted gif: 
+   * now we should be prepared to read a simple formatted gif:
    */
   width = gif->Image.Width;
   height = gif->Image.Height;
- 
-  vprintf ("info: got gif image with %d x %d pixel\n", width, height);
 
-  alloc_cells (width, height);
+  vprintf("info: got gif image with %d x %d pixel\n", width, height);
+
+  alloc_cells(width, height);
 
   /* color map pointer: */
-  gcol = gif->Image.ColorMap ? gif->Image.ColorMap->Colors 
-    : gif->SColorMap->Colors;
+  gcol = gif->Image.ColorMap ? gif->Image.ColorMap->Colors
+                             : gif->SColorMap->Colors;
 
   for (j = 0; j < height; j++) {
-    
+
     unsigned char *line;
-    
-    if (! (line = malloc (width))) {
-      fprintf (stderr, "error: out of memory reading gif - exiting\n");
-      exit (-1);
+
+    if (!(line = malloc(width))) {
+      fprintf(stderr, "error: out of memory reading gif - exiting\n");
+      exit(-1);
     }
 
-    DGifGetLine (gif, line, width);
+    DGifGetLine(gif, line, width);
 
     for (i = 0; i < width; i++) {
 
-      int col = line [i];
+      int col = line[i];
       GifColorType *gctype = gcol + col;
       int r = gctype->Red;
       int g = gctype->Green;
       int b = gctype->Blue;
 
       col = (r * 256 + g) * 256 + b;
-      col_idx = get_color_idx (col);
+      col_idx = get_color_idx(col);
 
       if (col_idx < 0) {
-    vprintf ("info: unknown color 0x%06x at %d,%d\n", col, i, j);
-    if (unknown_color == -1) {
-      fprintf (stderr, "cannot read from `%s'; reason: invalid color found\n",
-           fname);
-      return -1;
-    } else {
-      /* set to black or white: */
-      col_idx = (unknown_color == 0 ? c_black : c_white);
-    }
+        vprintf("info: unknown color 0x%06x at %d,%d\n", col, i, j);
+        if (unknown_color == -1) {
+          fprintf(stderr,
+                  "cannot read from `%s'; reason: invalid color found\n",
+                  fname);
+          return -1;
+        } else {
+          /* set to black or white: */
+          col_idx = (unknown_color == 0 ? c_black : c_white);
+        }
       }
 
-      set_cell (i, j, col_idx);
+      set_cell(i, j, col_idx);
     }
   }
 
-#if defined GIFLIB_MAJOR && (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
-  DGifCloseFile (gif, &errcode);
+#if defined GIFLIB_MAJOR &&                                                    \
+    (GIFLIB_MAJOR >= 6 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
+  DGifCloseFile(gif, &errcode);
 #else
-  DGifCloseFile (gif);
+  DGifCloseFile(gif);
 #endif
 
   return 0;
 }
 
-
-
-
 #endif /* gif */
 
-
-int
-read_ppm(char *fname) {
+int read_ppm(char *fname) {
     FILE *in;
     char line[1024];
     int ppm_type = 0;
@@ -1346,8 +1334,7 @@ read_ppm(char *fname) {
         in = fopen(fname, "rb");
     }
     if (!in) {
-        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname,
-                strerror(errno));
+        fprintf(stderr, "cannot open `%s'; reason: %s\n", fname, strerror(errno));
         return -1;
     }
 
@@ -1390,8 +1377,8 @@ read_ppm(char *fname) {
                 ncol);
     }
 
-    vprintf("info: got ppm image with %d x %d pixel and %d cols\n",
-            width, height, ncol);
+    vprintf("info: got ppm image with %d x %d pixel and %d cols\n", width, height,
+            ncol);
 
     alloc_cells(width, height);
 
@@ -1401,9 +1388,7 @@ read_ppm(char *fname) {
             int r, g, b, col, col_idx;
 
             if (ppm_type == 6) {
-                if ((r = fgetc(in)) < 0
-                    || (g = fgetc(in)) < 0
-                    || (b = fgetc(in)) < 0) {
+                if ((r = fgetc(in)) < 0 || (g = fgetc(in)) < 0 || (b = fgetc(in)) < 0) {
                     fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
                             strerror(errno));
                     return -1;
@@ -1421,7 +1406,8 @@ read_ppm(char *fname) {
             if (col_idx < 0) {
                 vprintf("info: unknown color 0x%06x at %d,%d\n", col, i, j);
                 if (unknown_color == -1) {
-                    fprintf(stderr, "cannot read from `%s'; reason: invalid color found\n",
+                    fprintf(stderr,
+                            "cannot read from `%s'; reason: invalid color found\n",
                             fname);
                     return -1;
                 } else {
@@ -1437,12 +1423,10 @@ read_ppm(char *fname) {
     return 0;
 }
 
-
 /*
  * helper to guess codel size:
  */
-void
-c_check(int i, int c, int *last_c, int *last_p, int *min_w) {
+void c_check(int i, int c, int *last_c, int *last_p, int *min_w) {
     if (i == 0) {
         *last_c = c;
         *last_p = i;
@@ -1456,15 +1440,13 @@ c_check(int i, int c, int *last_c, int *last_p, int *min_w) {
     }
 }
 
-
 /*
  * shrink the input by codel size.
  *
- * if we should guess the size, look about the smallest continuous 
+ * if we should guess the size, look about the smallest continuous
  * pixels.  this works quite good and is really helpful.
  */
-void
-cleanup_input() {
+void cleanup_input() {
     int i, j, last_c, last_p;
     int min_w = width + 1;
     int *o_cells;
@@ -1515,8 +1497,9 @@ cleanup_input() {
 
     for (j = 0; j < height; j++) {
         for (i = 0; i < width; i++) {
-            set_cell(i, j, o_cells[(j * codel_size) * (width * codel_size)
-                                   + (i * codel_size)]);
+            set_cell(
+                    i, j,
+                    o_cells[(j * codel_size) * (width * codel_size) + (i * codel_size)]);
         }
     }
 
@@ -1524,14 +1507,13 @@ cleanup_input() {
 }
 
 /*
- * to find a edge in dp / cc direction we simple use a recursive 
- * fill-algorithm. 
- * to avoid makeing a copy, we fill it twice: first with a 
+ * to find a edge in dp / cc direction we simple use a recursive
+ * fill-algorithm.
+ * to avoid makeing a copy, we fill it twice: first with a
  * internal color index and then with the original color.
  */
-int
-check_connected_cell(int x, int y, int c_idx, int c_mark,
-                     int *n_x, int *n_y, int *num_cells) {
+int check_connected_cell(int x, int y, int c_idx, int c_mark, int *n_x,
+                         int *n_y, int *num_cells) {
     int c, found;
 
     c = get_cell(x, y);
@@ -1541,42 +1523,36 @@ check_connected_cell(int x, int y, int c_idx, int c_mark,
         return -1;
     }
 
-    dprintf("deb: check_connected_cell %d,%d (col_idx %d)\n",
-            x, y, c);
+    dprintf("deb: check_connected_cell %d,%d (col_idx %d)\n", x, y, c);
 
     /*
      * look, if this codel is the furthest in dp and cc direction:
      */
     found = 0;
 
-    if (p_dir_pointer == 'l' && x <= *n_x) {        /* left */
-        if (x < *n_x
-            || (p_codel_chooser == 'l' && y > *n_y)
-            || (p_codel_chooser == 'r' && y < *n_y)) {
+    if (p_dir_pointer == 'l' && x <= *n_x) { /* left */
+        if (x < *n_x || (p_codel_chooser == 'l' && y > *n_y) ||
+            (p_codel_chooser == 'r' && y < *n_y)) {
             found = 1;
         }
 
-    } else if (p_dir_pointer == 'r' && x >= *n_x) {    /* right */
-        if (x > *n_x
-            || (p_codel_chooser == 'l' && y < *n_y)
-            || (p_codel_chooser == 'r' && y > *n_y)) {
+    } else if (p_dir_pointer == 'r' && x >= *n_x) { /* right */
+        if (x > *n_x || (p_codel_chooser == 'l' && y < *n_y) ||
+            (p_codel_chooser == 'r' && y > *n_y)) {
             found = 1;
         }
 
-    } else if (p_dir_pointer == 'u' && y <= *n_y) {    /* up */
-        if (y < *n_y
-            || (p_codel_chooser == 'l' && x < *n_x)
-            || (p_codel_chooser == 'r' && x > *n_x)) {
+    } else if (p_dir_pointer == 'u' && y <= *n_y) { /* up */
+        if (y < *n_y || (p_codel_chooser == 'l' && x < *n_x) ||
+            (p_codel_chooser == 'r' && x > *n_x)) {
             found = 1;
         }
 
-    } else if (p_dir_pointer == 'd' && y >= *n_y) {    /* down */
-        if (y > *n_y
-            || (p_codel_chooser == 'l' && x > *n_x)
-            || (p_codel_chooser == 'r' && x < *n_x)) {
+    } else if (p_dir_pointer == 'd' && y >= *n_y) { /* down */
+        if (y > *n_y || (p_codel_chooser == 'l' && x > *n_x) ||
+            (p_codel_chooser == 'r' && x < *n_x)) {
             found = 1;
         }
-
     }
 
     if (found) {
@@ -1601,9 +1577,7 @@ check_connected_cell(int x, int y, int c_idx, int c_mark,
     return 0;
 }
 
-
-int
-reset_check_connected_cell(int x, int y, int c_idx, int c_mark) {
+int reset_check_connected_cell(int x, int y, int c_idx, int c_mark) {
     int c;
 
     c = get_cell(x, y);
@@ -1625,9 +1599,7 @@ reset_check_connected_cell(int x, int y, int c_idx, int c_mark) {
     return 0;
 }
 
-
-int
-piet_walk_border_do(int *n_x, int *n_y, int *num_cells) {
+int piet_walk_border_do(int *n_x, int *n_y, int *num_cells) {
     int rc, c_idx;
 
     /* store current color index: */
@@ -1637,8 +1609,8 @@ piet_walk_border_do(int *n_x, int *n_y, int *num_cells) {
     *num_cells = 0;
 
     /* we fill the area with another color and check the border: */
-    rc = check_connected_cell(p_xpos, p_ypos, c_idx, c_mark_index,
-                              n_x, n_y, num_cells);
+    rc = check_connected_cell(p_xpos, p_ypos, c_idx, c_mark_index, n_x, n_y,
+                              num_cells);
 
     dprintf("DEB: after check: rc is %d (num_cells = %d)\n", rc, *num_cells);
 
@@ -1654,19 +1626,17 @@ piet_walk_border_do(int *n_x, int *n_y, int *num_cells) {
     return rc;
 }
 
-
 /*
- * walk along the border of a given colorblock looking about the 
+ * walk along the border of a given colorblock looking about the
  * next codel described by dir dp and the cc.
  *
  * return the coordinates of the new codel and the new directions.
  */
-int
-piet_walk_border(int *n_x, int *n_y, int *num_cells) {
+int piet_walk_border(int *n_x, int *n_y, int *num_cells) {
     int rc;
 
-    dprintf("info: walk_border 1: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n",
-            *n_x, *n_y, p_dir_pointer, p_codel_chooser);
+    dprintf("info: walk_border 1: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n", *n_x, *n_y,
+            p_dir_pointer, p_codel_chooser);
 
     rc = piet_walk_border_do(n_x, n_y, num_cells);
 
@@ -1675,40 +1645,37 @@ piet_walk_border(int *n_x, int *n_y, int *num_cells) {
         exit(-99);
     }
 
-    dprintf("info: walk_border 2: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n",
-            *n_x, *n_y, p_dir_pointer, p_codel_chooser);
+    dprintf("info: walk_border 2: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n", *n_x, *n_y,
+            p_dir_pointer, p_codel_chooser);
 
     return 0;
 }
 
-int
-piet_walk_white(int *n_x, int *n_y) {
+int piet_walk_white(int *n_x, int *n_y) {
     int c_col, a_x = *n_x, a_y = *n_y;
 
-    dprintf("info: walk_white 1: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n",
-            *n_x, *n_y, p_dir_pointer, p_codel_chooser);
+    dprintf("info: walk_white 1: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n", *n_x, *n_y,
+            p_dir_pointer, p_codel_chooser);
 
     c_col = get_cell(p_xpos, p_ypos);
 
     while (c_col == c_white) {
         dprintf("deb: white cell passed to %d, %d\n", a_x, a_y);
-        a_x += dp_dx (p_dir_pointer);
-        a_y += dp_dy (p_dir_pointer);
+        a_x += dp_dx(p_dir_pointer);
+        a_y += dp_dy(p_dir_pointer);
         c_col = get_cell(a_x, a_y);
     }
 
     *n_x = a_x;
     *n_y = a_y;
 
-    dprintf("info: walk_border 2: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n",
-            *n_x, *n_y, p_dir_pointer, p_codel_chooser);
+    dprintf("info: walk_border 2: n_x=%d, n_y=%d, n_dp=%c, n_cc=%c\n", *n_x, *n_y,
+            p_dir_pointer, p_codel_chooser);
 
     return 0;
 }
 
-
-void
-piet_init() {
+void piet_init() {
     p_dir_pointer = p_right;
     p_codel_chooser = p_left;
     p_xpos = p_ypos = 0;
@@ -1716,7 +1683,6 @@ piet_init() {
     /* init anyway: */
     exec_step = 0;
 }
-
 
 /*
  *  Commands
@@ -1729,14 +1695,13 @@ piet_init() {
  *    3 Steps   greater     pointer     switch
  *    4 Steps duplicate        roll in(number)
  *    5 Steps  in(char) out(number)  out(char)
- * 
+ *
  * fill msg with a string describing the action (limited space).
  *
  * return -1 on error condition (actually there is none)
  */
 
-int
-piet_action(int c_col, int a_col, int num_cells, char *msg) {
+int piet_action(int c_col, int a_col, int num_cells, char *msg) {
     int hue_change, light_change;
 
     hue_change = ((get_hue(a_col) - get_hue(c_col)) + n_hue) % n_hue;
@@ -1746,9 +1711,8 @@ piet_action(int c_col, int a_col, int num_cells, char *msg) {
 
     t2printf("action: c_col=%s, a_col=%s -> hue_change %d - %d = %d, "
                      "light_change %d - %d = %d\n",
-             cell2str(c_col), cell2str(a_col),
-             get_hue(a_col), get_hue(c_col), hue_change,
-             get_light(a_col), get_light(c_col), light_change);
+             cell2str(c_col), cell2str(a_col), get_hue(a_col), get_hue(c_col),
+             hue_change, get_light(a_col), get_light(c_col), light_change);
 
     switch (hue_change) {
 
@@ -1965,10 +1929,10 @@ piet_action(int c_col, int a_col, int num_cells, char *msg) {
                     val = stack[num_stack - 1];
 
                     for (i = 0; val > 0 && i < (val % 4); i++) {
-                        p_dir_pointer = turn_dp (p_dir_pointer);
+                        p_dir_pointer = turn_dp(p_dir_pointer);
                     }
                     for (i = 0; val < 0 && i > -((-1 * val) % 4); i--) {
-                        p_dir_pointer = turn_dp_inv (p_dir_pointer);
+                        p_dir_pointer = turn_dp_inv(p_dir_pointer);
                     }
                     num_stack--;
 
@@ -1994,7 +1958,7 @@ piet_action(int c_col, int a_col, int num_cells, char *msg) {
                     val = stack[num_stack - 1];
 
                     for (i = 0; i < val; i++) {
-                        p_codel_chooser = toggle_cc (p_codel_chooser);
+                        p_codel_chooser = toggle_cc(p_codel_chooser);
                     }
                     num_stack--;
                     tdump_stack();
@@ -2074,8 +2038,7 @@ piet_action(int c_col, int a_col, int num_cells, char *msg) {
                         for (i = 0; i > roll && roll < 0; i--) {
                             int j, val = stack[num_stack - depth];
                             for (j = 0; j < depth - 1; j++) {
-                                stack[num_stack - depth + j] =
-                                        stack[num_stack - depth + j + 1];
+                                stack[num_stack - depth + j] = stack[num_stack - depth + j + 1];
                             }
                             stack[num_stack - 1] = val;
                         }
@@ -2205,12 +2168,20 @@ piet_action(int c_col, int a_col, int num_cells, char *msg) {
     return 0;
 }
 
-
-int
-piet_step() {
-    int rc, tries, n_x, n_y, a_x, a_y, pre_dp, pre_cc;
-    int pre_xpos, pre_ypos;
-    int c_col, a_col, num_cells;
+int piet_step() {
+    int pre_cc;
+    int pre_dp;
+    int a_y;
+    int a_x;
+    int n_y;
+    int n_x;
+    int rc;
+    int tries;
+    int pre_ypos;
+    int pre_xpos;
+    int num_cells;
+    int a_col;
+    int c_col;
     char msg[128];
     // a noop from a white codel:
     int white_crossed = 0;
@@ -2225,7 +2196,6 @@ piet_step() {
                 exec_step);
         return -1;
     }
-
 
     /* current cell col_idx: */
     c_col = get_cell(p_xpos, p_ypos);
@@ -2258,7 +2228,7 @@ piet_step() {
     pre_cc = p_codel_chooser;
 
     if (do_gdtrace) {
-        gd_try_init ();
+        gd_try_init();
     }
 
     if (c_col == c_black) {
@@ -2289,18 +2259,17 @@ piet_step() {
         }
 
         /* find adjacent cell to border and dir: */
-        a_x = n_x + dp_dx (p_dir_pointer);
-        a_y = n_y + dp_dy (p_dir_pointer);
+        a_x = n_x + dp_dx(p_dir_pointer);
+        a_y = n_y + dp_dy(p_dir_pointer);
         a_col = get_cell(a_x, a_y);
 
         dprintf("deb: try %d: testing cell %d, %d (col_idx %d) "
                         "with dp='%c', cc='%c'\n",
                 tries, a_x, a_y, a_col, p_dir_pointer, p_codel_chooser);
 
-        if (do_gdtrace && !gd_trace_simple && gd_trace_end > 0
-            && exec_step >= gd_trace_start && exec_step <= gd_trace_end) {
-            gd_try_step (exec_step, tries, n_x, n_y,
-                         p_dir_pointer, p_codel_chooser);
+        if (do_gdtrace && !gd_trace_simple && gd_trace_end > 0 &&
+            exec_step >= gd_trace_start && exec_step <= gd_trace_end) {
+            gd_try_step(exec_step, tries, n_x, n_y, p_dir_pointer, p_codel_chooser);
         }
 
         /*
@@ -2324,17 +2293,18 @@ piet_step() {
          */
         if (a_col == c_white) {
             while (a_col == c_white) {
-                dprintf("deb: white cell passed to %d, %d (now col_idx %d)\n",
-                        a_x, a_y, a_col);
-                a_x += dp_dx (p_dir_pointer);
-                a_y += dp_dy (p_dir_pointer);
+                dprintf("deb: white cell passed to %d, %d (now col_idx %d)\n", a_x, a_y,
+                        a_col);
+                a_x += dp_dx(p_dir_pointer);
+                a_y += dp_dy(p_dir_pointer);
                 a_col = get_cell(a_x, a_y);
             }
 
             if (a_col >= 0 && a_col != c_black) {
                 /* a valid cell - continue without action: */
                 tprintf("trace: white cell(s) crossed - continuing with no command "
-                                "at %d,%d...\n", a_x, a_y);
+                                "at %d,%d...\n",
+                        a_x, a_y);
                 white_crossed = 1;
             } else {
                 /*
@@ -2356,8 +2326,8 @@ piet_step() {
                     white_crossed = 1;
                     while (a_col < 0 || a_col == c_black) {
                         a_col = c_white;
-                        a_x -= dp_dx (p_dir_pointer);
-                        a_y -= dp_dy (p_dir_pointer);
+                        a_x -= dp_dx(p_dir_pointer);
+                        a_y -= dp_dy(p_dir_pointer);
                         tprintf("trace: hitting black block when sliding at %d,%d %c %c\n",
                                 a_x, a_y, p_codel_chooser, p_dir_pointer);
 
@@ -2365,8 +2335,7 @@ piet_step() {
                         p_dir_pointer = turn_dp(p_dir_pointer);
 
                         for (i = 0; i < visited_len; i++) {
-                            if (visited[i * 4 + 0] == a_x &&
-                                visited[i * 4 + 1] == a_y &&
+                            if (visited[i * 4 + 0] == a_x && visited[i * 4 + 1] == a_y &&
                                 visited[i * 4 + 2] == p_codel_chooser &&
                                 visited[i * 4 + 3] == p_dir_pointer) {
                                 return -1;
@@ -2383,19 +2352,21 @@ piet_step() {
                         while (a_col == c_white) {
                             dprintf("deb: white cell passed to %d, %d (now col_idx %d)\n",
                                     a_x, a_y, a_col);
-                            a_x += dp_dx (p_dir_pointer);
-                            a_y += dp_dy (p_dir_pointer);
+                            a_x += dp_dx(p_dir_pointer);
+                            a_y += dp_dy(p_dir_pointer);
                             a_col = get_cell(a_x, a_y);
                         }
                     }
-                    if (visited) free(visited);
+                    if (visited)
+                        free(visited);
                 } else {
                     white_crossed = 1;
                     a_col = c_white;
-                    a_x -= dp_dx (p_dir_pointer);
-                    a_y -= dp_dy (p_dir_pointer);
+                    a_x -= dp_dx(p_dir_pointer);
+                    a_y -= dp_dy(p_dir_pointer);
                     tprintf("trace: entering white block at %d,%d (like the perl "
-                                    "interpreter would)...\n", a_x, a_y);
+                                    "interpreter would)...\n",
+                            a_x, a_y);
                 }
             }
         }
@@ -2425,9 +2396,8 @@ piet_step() {
         } else {
             tprintf("\ntrace: step %d  (%d,%d/%c,%c %s -> %d,%d/%c,%c %s):\n",
                     exec_step, p_xpos, p_ypos, pre_dp, pre_cc,
-                    cell2str(get_cell(p_xpos, p_ypos)),
-                    a_x, a_y, p_dir_pointer, p_codel_chooser,
-                    cell2str(get_cell(a_x, a_y)));
+                    cell2str(get_cell(p_xpos, p_ypos)), a_x, a_y, p_dir_pointer,
+                    p_codel_chooser, cell2str(get_cell(a_x, a_y)));
 
             exec_step++;
 
@@ -2447,10 +2417,10 @@ piet_step() {
                 rc = piet_action(c_col, a_col, num_cells, msg);
             }
 
-            if (do_gdtrace && gd_trace_end > 0
-                && exec_step >= gd_trace_start && exec_step <= gd_trace_end) {
+            if (do_gdtrace && gd_trace_end > 0 && exec_step >= gd_trace_start &&
+                exec_step <= gd_trace_end) {
                 /* graphical trace output: */
-                gd_action (pre_xpos, pre_ypos, n_x, n_y, a_x, a_y, msg);
+                gd_action(pre_xpos, pre_ypos, n_x, n_y, a_x, a_y, msg);
             }
 
             if (rc < 0) {
@@ -2470,9 +2440,7 @@ piet_step() {
     return -1;
 }
 
-
-int
-piet_run() {
+int piet_run() {
     if (width <= 0 || height <= 0) {
         fprintf(stderr, "nothing to execute...\n");
         return -1;
@@ -2482,8 +2450,8 @@ piet_run() {
 
     while (1) {
 
-        t2printf("trace:  pos=%d,%d dp=%c cc=%c\n",
-                 p_xpos, p_ypos, p_dir_pointer, p_codel_chooser);
+        t2printf("trace:  pos=%d,%d dp=%c cc=%c\n", p_xpos, p_ypos, p_dir_pointer,
+                 p_codel_chooser);
 
         if (piet_step() < 0) {
             vprintf("\ninfo: program end\n");
@@ -2496,226 +2464,214 @@ piet_run() {
              * an up-to-date picture; it's way expensive, so it may be
              * get an extra option...
              */
-            gd_save ();
+            gd_save();
         }
     }
 
     return 0;
 }
 
-
 /*
  * some experimental fun:
  */
-void
-do_n_str_cmd(char *do_n_str) {
-#ifndef HAVE_GD_H
-
-    printf("sorry, no gd support...\n");
-
-#else
-
-    int i, j, k, o, n_row;
-    int s = 0, avg = 0, n = strlen (do_n_str);
-    int h, w, d_max = 0;
-    int x, y, col;
+void do_n_str_cmd(char *do_n_str) {
+    int j;
+    int k;
+    int o;
+    int n_row;
+    int s = 0;
+    int avg = 0;
+    int n = strlen(do_n_str);
+    int h;
+    int w;
+    int d_max = 0;
+    int x;
+    int y;
+    int col;
     FILE *out;
 
     gdImagePtr img;
-    int cols [n_colors];
+    int cols[n_colors];
 
-    printf ("string=%s\n", do_n_str);
+    printf("string=%s\n", do_n_str);
 
     if (n == 0) {
-      /* avoid errors: */
-      return;
+        /* avoid errors: */
+        return;
     }
 
-    for (i = 0; i < n; i++) {
-      int c = do_n_str [i];
-      s += c;
+    for (int i = 0; i < n; i++) {
+        int c = do_n_str[i];
+        s += c;
     }
 
     avg = s / n;
 
-    printf ("avg: %d rounded to %d\n", avg, (avg / 5) * 5);
+    printf("avg: %d rounded to %d\n", avg, (avg / 5) * 5);
 
     avg = (avg / 5) * 5;
 
+    for (int i = 0; i < n; i++) {
+        int c = do_n_str[i];
+        int d = c - avg;
 
-    for (i = 0; i < n; i++) {
-      int c = do_n_str [i];
-      int d = c - avg;
+        d_max = i_max(d_max, i_abs(d));
 
-      d_max = i_max(d_max, i_abs(d));
-
-      if (d < 0) {
-        printf ("sub: %d\n", d);
-      } else if (d > 0) {
-        printf ("add: %d\n", d);
-      } else {
-        printf ("dup only\n");
-      }
+        if (d < 0) {
+            printf("sub: %d\n", d);
+        } else if (d > 0) {
+            printf("add: %d\n", d);
+        } else {
+            printf("dup only\n");
+        }
     }
 
-    printf ("\n");
+    printf("\n");
 
     /* wild guess about number of rows to build: */
-    n_row = (int) sqrt (n / 2) - 1;
+    n_row = (int) sqrt(n / 2) - 1;
     if (n_row < 2) {
-      n_row = 1;
+        n_row = 1;
     }
 
+    printf("n: %d, d_max/4: %d, n_row: %d\n", n, d_max / 4, n_row);
 
-    printf ("n: %d, d_max/4: %d, n_row: %d\n", n, d_max / 4, n_row);
+    w = 5 + (n / n_row) * 4 + /* right off */ 80;
+    h = i_max(avg / 5, n_row * (3 + d_max / 4)) + /* lower off */ 40;
 
-    w = 5 + (n / n_row) * 4 +    /* right off */ 80;
-    h = i_max (avg / 5, n_row * (3 + d_max / 4)) + /* lower off */ 40;
+    printf("\nsize: %dx%d\n", w, h);
 
+    img = gdImageCreate(w, h);
 
-    printf ("\nsize: %dx%d\n", w, h);
+    gdImageColorAllocate(img, 255, 255, 255);
+    gd_alloc_piet_colors(img, cols);
 
-    img = gdImageCreate (w, h);
-
-    gdImageColorAllocate (img, 255, 255, 255);
-    gd_alloc_piet_colors (img, cols);
-
-    gdImageFilledRectangle (img, 0, 0, 0, (avg / 5 - 1), cols [6]);   /* red */
-    gdImageFilledRectangle (img, 1, 0, 1, 3, cols [12]);
-    gdImageFilledRectangle (img, 2, 0, 2, 0, cols [12]);	/* push */
-    gdImageSetPixel (img, 3, 0, cols [0]);		/* push */
-    gdImageSetPixel (img, 4, 0, cols [13]);		/* mul */
+    gdImageFilledRectangle(img, 0, 0, 0, (avg / 5 - 1), cols[6]); /* red */
+    gdImageFilledRectangle(img, 1, 0, 1, 3, cols[12]);
+    gdImageFilledRectangle(img, 2, 0, 2, 0, cols[12]); /* push */
+    gdImageSetPixel(img, 3, 0, cols[0]);               /* push */
+    gdImageSetPixel(img, 4, 0, cols[13]);              /* mul */
 
     col = 13;
     x = 5;
     y = 0;
 
-    for (i = 0; i < n; i++) {
-      int c = do_n_str [i];
-      int d = c - avg;
+    for (int i = 0; i < n; i++) {
+        int c = do_n_str[i];
+        int d = c - avg;
 
+        /* new row ? */
+        if (i > 0 && i + 1 != n && (i % (n / n_row + 1)) == 0) {
 
+            printf("** new row: i=%d\n", i);
 
-      /* new row ? */
-      if (i > 0 && i + 1 != n && (i % (n / n_row + 1)) == 0) {
+            /* corner pixel: */
+            gdImageSetPixel(img, x + 1, y, cols[6]);
+            gdImageSetPixel(img, x + 2, y, cols[19]);
 
-        printf ("** new row: i=%d\n", i);
+            y += i_max(avg / 5 + 2, d_max / 4 + 2);
+            gdImageSetPixel(img, x + 1, y - 2, cols[6]);
+            gdImageSetPixel(img, x + 1, y - 1, cols[12]); /* push */
+            gdImageSetPixel(img, x + 1, y, cols[3]);      /* dp */
 
+            x = 0;
 
-        /* corner pixel: */
-        gdImageSetPixel (img, x + 1, y, cols [6]);
-        gdImageSetPixel (img, x + 2, y, cols [19]);
+            gdImageSetPixel(img, x + 5, y, cols[9]);
+            gdImageSetPixel(img, x + 4, y, cols[15]);
 
-        y += i_max (avg / 5 + 2, d_max / 4 + 2);
-        gdImageSetPixel (img, x + 1, y - 2, cols [6]);
-        gdImageSetPixel (img, x + 1, y - 1, cols [12]);           /* push */
-        gdImageSetPixel (img, x + 1, y, cols [3]);		/* dp */
+            gdImageSetPixel(img, x + 2, y, cols[6]); /* cc */
+            gdImageSetPixel(img, x + 3, y, cols[6]);
+            gdImageSetPixel(img, x + 1, y, cols[12]);    /* push */
+            gdImageSetPixel(img, x, y, cols[3]);         /* dp */
+            gdImageSetPixel(img, x, y + 1, cols[3]);     /* dp */
+            gdImageSetPixel(img, x + 1, y + 1, cols[3]); /* dp */
 
-        x = 0;
+            gdImageSetPixel(img, x + 2, y + 1, cols[1]); /* dup */
 
-
-        gdImageSetPixel (img, x + 5, y, cols [9]);
-        gdImageSetPixel (img, x + 4, y, cols [15]);
-
-        gdImageSetPixel (img, x + 2, y, cols [6]);		/* cc */
-        gdImageSetPixel (img, x + 3, y, cols [6]);
-        gdImageSetPixel (img, x + 1, y, cols [12]);               /* push */
-        gdImageSetPixel (img, x, y, cols [3]);		        /* dp */
-        gdImageSetPixel (img, x, y + 1, cols [3]);		/* dp */
-        gdImageSetPixel (img, x + 1, y + 1, cols [3]);		/* dp */
-
-        gdImageSetPixel (img, x + 2, y + 1, cols [1]);		/* dup */
-
-        x += 4;
-        y += 1;
-        col = 3;
-      }
-
-
-
-      /* dup: */
-      col = adv_col(col, 4, 0);
-      gdImageSetPixel (img, x, y, cols [col]);			/* dup */
-
-      o = i_abs (d) - 1;
-#if 1
-      printf ("fill: x=%d, y=%d, col=%d, o=%d\n", x, y, col, o);
-
-      for (j = 0; o > 0; j++) {
-        for (k = 0; k < 4 && o > 0; k++) {
-      gdImageSetPixel (img, x - k, y + j + 1, cols [col]);
-      o--;
+            x += 4;
+            y += 1;
+            col = 3;
         }
-      }
-#endif
-      x += 1;
 
-      col = adv_col(col, 0, 1);
-      gdImageSetPixel (img, x, y, cols [col]);	/* push */
+        /* dup: */
+        col = adv_col(col, 4, 0);
+        gdImageSetPixel(img, x, y, cols[col]); /* dup */
 
-      printf ("push: x=%d, y=%d, col=%d\n", x, y, col);
+        o = i_abs(d) - 1;
+        printf("fill: x=%d, y=%d, col=%d, o=%d\n", x, y, col, o);
 
-      x += 1;
+        for (j = 0; o > 0; j++) {
+            for (k = 0; k < 4 && o > 0; k++) {
+                gdImageSetPixel(img, x - k, y + j + 1, cols[col]);
+                o--;
+            }
+        }
+        x += 1;
 
-      if (d < 0) {
-        col = adv_col(col, 1, 1);
-        gdImageSetPixel (img, x, y, cols [col]);	/* sub */
-      } else if (d > 0) {
-        col = adv_col(col, 1, 0);
-        gdImageSetPixel (img, x, y, cols [col]);	/* add */
-      } else {
-        printf ("dup only\n");
-        col = adv_col(col, 0, 2);
-        gdImageSetPixel (img, x, y, cols [col]);	/* pop */
-      }
+        col = adv_col(col, 0, 1);
+        gdImageSetPixel(img, x, y, cols[col]); /* push */
 
-      printf ("sub/add/pop: x=%d, y=%d, col=%d\n", x, y, col);
+        printf("push: x=%d, y=%d, col=%d\n", x, y, col);
 
-      x += 1;
+        x += 1;
 
-      col = adv_col(col, 5, 2);
-      gdImageSetPixel (img, x, y, cols [col]);	/* outchar */
+        if (d < 0) {
+            col = adv_col(col, 1, 1);
+            gdImageSetPixel(img, x, y, cols[col]); /* sub */
+        } else if (d > 0) {
+            col = adv_col(col, 1, 0);
+            gdImageSetPixel(img, x, y, cols[col]); /* add */
+        } else {
+            printf("dup only\n");
+            col = adv_col(col, 0, 2);
+            gdImageSetPixel(img, x, y, cols[col]); /* pop */
+        }
 
-      printf ("out(c): x=%d, y=%d, col=%d\n", x, y, col);
+        printf("sub/add/pop: x=%d, y=%d, col=%d\n", x, y, col);
 
-      x += 1;
+        x += 1;
+
+        col = adv_col(col, 5, 2);
+        gdImageSetPixel(img, x, y, cols[col]); /* outchar */
+
+        printf("out(c): x=%d, y=%d, col=%d\n", x, y, col);
+
+        x += 1;
     }
 
     /* corner pixel: */
-    gdImageSetPixel (img, w - 1, 0, cols [6]);
-    gdImageSetPixel (img, w - 1, h - 1, cols [6]);
-    gdImageSetPixel (img, 0, h - 1, cols [6]);
+    gdImageSetPixel(img, w - 1, 0, cols[6]);
+    gdImageSetPixel(img, w - 1, h - 1, cols[6]);
+    gdImageSetPixel(img, 0, h - 1, cols[6]);
 
-
-    if (! (out = fopen ("n-str.png", "wb"))) {
-      fprintf (stderr, "cannot open n-str.png for writing; reason: %s\n",
-           strerror (errno));
+    if (!(out = fopen("n-str.png", "wb"))) {
+        fprintf(stderr, "cannot open n-str.png for writing; reason: %s\n",
+                strerror(errno));
     } else {
-      gdImagePng (img, out);
-      fclose (out);
-      printf ("file saved: n-str.png\n");
+        gdImagePng(img, out);
+        fclose(out);
+        printf("file saved: n-str.png\n");
     }
-
-#endif
 }
-
 
 /*
  * save a trace picture on ^C too:
  */
-void
-do_signal() {
-    gd_save ();
+void do_signal() {
+    gd_save();
     exit(-6);
 }
-
 
 /*
  * main entry:
  */
 
-int
-main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
+    // mount the current folder as a NODEFS instance
+    // inside of emscripten
+    EM_ASM(FS.mkdir('/working');
+                   FS.mount(NODEFS, {root : '.'}, '/working'););
+    chdir("/working");
     int rc;
 
     if (parse_args(argc, argv) < 0) {
@@ -2731,9 +2687,8 @@ main(int argc, char *argv[]) {
         usage(-1);
     }
 
-    if (read_png(input_filename) < 0
-        && read_gif (input_filename) < 0
-        && read_ppm(input_filename) < 0) {
+    if (read_png(input_filename) < 0 && read_gif(input_filename) < 0 &&
+        read_ppm(input_filename) < 0) {
         exit(-2);
     } else if (codel_size != 1) {
         cleanup_input();
@@ -2744,7 +2699,7 @@ main(int argc, char *argv[]) {
     }
 
     if (do_gdtrace) {
-        gd_init ();
+        gd_init();
 
         /* save a pic on ctrl-c: */
         signal(SIGINT, (void (*)(int)) do_signal);
@@ -2753,7 +2708,7 @@ main(int argc, char *argv[]) {
     rc = piet_run();
 
     if (do_gdtrace) {
-        gd_save ();
+        gd_save();
     }
 
     return rc;
