@@ -1,21 +1,20 @@
 /**
  * Created by peter on 6/25/17.
  */
-var mymodule = require("npiet.js");
 function load_png_from_url(pngurl)
 {
-    var buffer = mymodule._malloc(pngurl.length + 1);
-    mymodule.writeStringToMemory(pngurl, buffer);
-    var returnval = mymodule.ccall('load_png_from_url', 'number',['number'], buffer);
-    mymodule._free(buffer);
+    var buffer = Module._malloc(pngurl.length + 1);
+    Module.writeStringToMemory(pngurl, buffer);
+    var returnval = Module.ccall('load_png_from_url', 'number',['number'], buffer);
+    Module._free(buffer);
     return returnval;
 }
 function load_ppm_from_url(pngurl)
 {
-    var buffer = mymodule._malloc(pngurl.length + 1);
-    mymodule.writeStringToMemory(pngurl, buffer);
-    var returnval = mymodule.ccall('load_ppm_from_url', 'number',['number'], buffer);
-    mymodule._free(buffer);
+    var buffer = Module._malloc(pngurl.length + 1);
+    Module.writeStringToMemory(pngurl, buffer);
+    var returnval = Module.ccall('load_ppm_from_url', 'number',['number'], buffer);
+    Module._free(buffer);
     return returnval;
 }
 

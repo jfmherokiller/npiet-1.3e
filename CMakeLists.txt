@@ -8,7 +8,7 @@ include(CheckIncludeFile)
 include(AC_HEADER_STDC)
 include(CheckPrototypeExists)
 
-SET(EMSCRIPEN_FLAGS "-s USE_LIBPNG=1 -s USE_ZLIB=1 -s NO_EXIT_RUNTIME=1")
+SET(EMSCRIPEN_FLAGS "-s USE_LIBPNG=1 -s USE_ZLIB=1 -s NO_EXIT_RUNTIME=1 -O1")
 add_definitions(${EMSCRIPEN_FLAGS})
 include_directories(externals\\libgd\\src)
 add_subdirectory(externals)
