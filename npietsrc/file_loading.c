@@ -9,7 +9,7 @@ int read_ppm(char *fname) {
     FILE *in;
     char line[1024];
     int ppm_type = 0;
-    int i, j, width, height, ncol;
+    int width, height, ncol;
 
     if (!strcmp(fname, "-")) {
         /* read from stdin: */
@@ -24,8 +24,13 @@ int read_ppm(char *fname) {
     }
 
     if (!fgets(line, sizeof(line), in)) {
-        fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
-                feof(in) ? "EOF" : strerror(errno));
+        if (feof(in)) {
+            fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
+                    "EOF");
+        } else {
+            fprintf(stderr, "cannot read from `%s'; reason: %s\n", fname,
+                    strerror(errno));
+        }
         return -1;
     }
 
@@ -67,8 +72,8 @@ int read_ppm(char *fname) {
 
     alloc_cells(width, height);
 
-    for (j = 0; j < height; j++) {
-        for (i = 0; i < width; i++) {
+    for (int j = 0; j < height; j++) {
+        for (int i = 0; i < width; i++) {
 
             int r, g, b, col, col_idx;
 
